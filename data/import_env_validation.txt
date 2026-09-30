@@ -1,0 +1,186 @@
+{
+  "source": "E:\\beauty-cs-agent\\data\\raw\\���� 1�����ݹ�����-ҵ������.xlsx",
+  "sha256": "b5ac027e863c5580dab39c8f459e4698d65e9fbec29832c9915448f2087307b7",
+  "tables": {
+    "data_description": {
+      "sheet": "����˵��",
+      "rows": 18,
+      "columns": [
+        "column_1",
+        "column_2",
+        "column_3",
+        "column_4",
+        "column_5",
+        "column_6",
+        "column_7",
+        "column_8"
+      ]
+    },
+    "chat_messages": {
+      "sheet": "�����¼",
+      "rows": 998,
+      "columns": [
+        "conversation_id",
+        "message_sequence",
+        "message_id",
+        "sent_at",
+        "role",
+        "buyer_nickname",
+        "sender",
+        "store",
+        "scene_major",
+        "scene_minor",
+        "is_target_buyer_message",
+        "message_text",
+        "content_type",
+        "chat_content",
+        "category",
+        "image_path",
+        "order_number",
+        "work_order_number"
+      ]
+    },
+    "orders": {
+      "sheet": "����",
+      "rows": 113,
+      "columns": [
+        "order_number",
+        "conversation_id",
+        "buyer_nickname",
+        "store",
+        "product_sku",
+        "product_name",
+        "quantity",
+        "unit_price_yuan",
+        "paid_amount_yuan",
+        "order_status",
+        "ordered_at",
+        "paid_at",
+        "shipped_at",
+        "carrier",
+        "tracking_number",
+        "shipping_province",
+        "shipping_city",
+        "gift",
+        "buyer_note"
+      ]
+    },
+    "replacement_work_orders": {
+      "sheet": "������������",
+      "rows": 24,
+      "columns": [
+        "work_order_number",
+        "conversation_id",
+        "order_number",
+        "buyer_nickname",
+        "store",
+        "work_order_type",
+        "after_sales_reason",
+        "sent_product_sku",
+        "sent_product_name",
+        "quantity",
+        "original_tracking_number",
+        "replacement_tracking_number",
+        "carrier",
+        "fulfillment_warehouse",
+        "complaint_urgent",
+        "work_order_status",
+        "handler",
+        "created_at",
+        "completed_at"
+      ]
+    },
+    "offline_payment_work_orders": {
+      "sheet": "���´���",
+      "rows": 13,
+      "columns": [
+        "work_order_number",
+        "conversation_id",
+        "order_number",
+        "buyer_nickname",
+        "store",
+        "payment_type",
+        "refund_issue_type",
+        "refund_amount_yuan",
+        "alipay_real_name",
+        "alipay_account",
+        "related_tracking_number",
+        "transfer_status",
+        "work_order_status",
+        "handler",
+        "created_at",
+        "completed_at"
+      ]
+    },
+    "logistics_work_orders": {
+      "sheet": "��������",
+      "rows": 15,
+      "columns": [
+        "work_order_number",
+        "conversation_id",
+        "order_number",
+        "buyer_nickname",
+        "store",
+        "issue_type",
+        "carrier",
+        "problem_tracking_number",
+        "shipping_warehouse",
+        "order_paid_yuan",
+        "resolution",
+        "shipping_province",
+        "shipping_city",
+        "work_order_status",
+        "handler",
+        "created_at",
+        "completed_at"
+      ]
+    },
+    "adverse_reaction_work_orders": {
+      "sheet": "������Ӧ����",
+      "rows": 10,
+      "columns": [
+        "work_order_number",
+        "conversation_id",
+        "order_number",
+        "buyer_nickname",
+        "store",
+        "reaction_type",
+        "age",
+        "skin_type",
+        "used_product",
+        "product_batch_number",
+        "affected_area",
+        "symptom_description",
+        "onset_after_use",
+        "stopped_use",
+        "sought_medical_care",
+        "task_status",
+        "handler",
+        "created_at",
+        "completed_at"
+      ]
+    },
+    "after_sales_return_work_orders": {
+      "sheet": "�ۺ��˻�����",
+      "rows": 18,
+      "columns": [
+        "work_order_number",
+        "conversation_id",
+        "order_number",
+        "buyer_nickname",
+        "store",
+        "package_type",
+        "return_reason",
+        "return_tracking_number",
+        "carrier",
+        "refund_number",
+        "receipt_recommendation",
+        "is_abnormal",
+        "task_status",
+        "handler",
+        "created_at",
+        "completed_at"
+      ]
+    }
+  }
+}

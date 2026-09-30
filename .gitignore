@@ -1,0 +1,50 @@
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+env/
+*.egg-info/
+
+# JavaScript / frontend
+node_modules/
+dist/
+build/
+.vite/
+*.tsbuildinfo
+
+# Generated local databases and runtime files
+*.db
+*.sqlite
+*.sqlite3
+*.sqlite3-*
+*.db-journal
+*.log
+coverage/
+
+# OS and editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Microsoft Office temporary lock files
+~$*
+
+# Temporary/generated artifacts
+tmp/
+temp/
+artifacts/
+data/generated/live_debug/
+data/generated/evaluation/
