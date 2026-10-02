@@ -65,6 +65,36 @@ class QwenAgentTests(unittest.TestCase):
         reply = QwenProvider._mock_suggested_reply({"recent_messages": [{"message_text": "可以帮我看一下吗"}], "orders": [], "work_orders": []}, {"findings": [], "level": "low"})
         self.assertIn("进一步核实", reply)
 
+    def test_agent_workflow_exposes_tool_checks_and_reply_basis(self):
+        db = ROOT / "data/beauty_cs_agent.sqlite3"
+        with sqlite3.connect(db) as conn:
+            conversation_id = conn.execute("SELECT conversation_id FROM chat_messages WHERE conversation_id IS NOT NULL LIMIT 1").fetchone()[0]
+        result = BeautyAgent(db, QwenProvider(mock=True)).suggest(conversation_id=conversation_id)
+        self.assertIsNotNone(result.workflow)
+        self.assertIn("customer_need", result.workflow)
+        self.assertIn("tool_checks", result.workflow)
+        self.assertIn("reply_basis", result.workflow)
+        self.assertIn("get_conversation", result.tool_calls)
+        self.assertIn("get_work_orders", result.tool_calls)
+
+    def test_logistics_reply_is_grounded_in_business_fact(self):
+        db = ROOT / "data/beauty_cs_agent.sqlite3"
+        with sqlite3.connect(db) as conn:
+            row = conn.execute("SELECT conversation_id FROM chat_messages WHERE message_text LIKE '%物流%' OR message_text LIKE '%快递%' LIMIT 1").fetchone()
+        if not row:
+            self.skipTest("no logistics conversation in current source data")
+        result = BeautyAgent(db, QwenProvider(mock=True)).suggest(conversation_id=row[0])
+        self.assertTrue(result.suggestion)
+        self.assertIn("get_work_orders", result.tool_calls)
+
+    def test_refund_and_adverse_reply_generators_are_not_generic_template(self):
+        refund = QwenProvider._mock_suggested_reply({"recent_messages": [{"message_text": "退款什么时候到账"}], "orders": [], "work_orders": [{"refund_amount_yuan": "8.8", "transfer_status": "转账成功"}]}, {"findings": [], "level": "medium"})
+        adverse = QwenProvider._mock_suggested_reply({"recent_messages": [{"message_text": "用了之后刺痛"}], "orders": [], "work_orders": [{"source_table": "adverse_reaction_work_orders", "work_order_number": "BL123", "symptom_description": "泛红刺痛"}]}, {"findings": [], "level": "critical"})
+        self.assertNotEqual(refund, "感谢您的说明。我已结合订单和历史记录整理了情况，接下来会为您核对并尽快回复。")
+        self.assertNotEqual(adverse, "感谢您的说明。我已结合订单和历史记录整理了情况，接下来会为您核对并尽快回复。")
+        self.assertIn("转账成功", refund)
+        self.assertIn("暂停使用", adverse)
+
     def test_structured_output_parser_accepts_fence_and_prose(self):
         payload = '{"intent":"售后","emotion":"关注","summary":"ok","evidence":[],"risk_level":"low","suggested_reply":"收到"}'
         self.assertEqual(QwenProvider._parse_json("```json\n" + payload + "\n```" )["risk_level"], "low")

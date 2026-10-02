@@ -98,7 +98,17 @@ def create_app():
         with sqlite3.connect(DB_PATH) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute("SELECT conversation_id, buyer_nickname, MAX(sent_at) AS last_message_at, COUNT(*) AS message_count, MAX(message_text) AS last_message FROM chat_messages WHERE conversation_id IS NOT NULL GROUP BY conversation_id, buyer_nickname ORDER BY last_message_at DESC LIMIT 100").fetchall()
-        return {"items": [dict(row) for row in rows], "total": len(rows)}
+        items = []
+        for row in rows:
+            item = dict(row)
+            # Keep the list useful before analysis: derive a lightweight marker
+            # from the same real customer context used by the risk engine.
+            buyer_context = tools.get_customer_context(item.get("buyer_nickname"))
+            risk = assess_context(buyer_context)
+            item["risk_level"] = risk.get("level", "low")
+            item["status"] = "待跟进" if risk.get("level") in {"high", "critical"} else "服务中"
+            items.append(item)
+        return {"items": items, "total": len(items)}
 
     @app.get("/api/workbench/sessions/{conversation_id}")
     def session_detail(conversation_id: str) -> dict[str, Any]:

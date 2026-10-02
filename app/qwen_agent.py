@@ -68,6 +68,7 @@ class AgentResult:
     response_format_mode: str = "json_schema"
     repair_used: bool = False
     hybrid_risk: dict[str, Any] | None = None
+    workflow: dict[str, Any] | None = None
 
 
 class QwenProvider:
@@ -325,6 +326,54 @@ class BeautyAgent:
         self.tools = BusinessTools(db_path)
         self.provider = provider or QwenProvider()
 
+    @staticmethod
+    def _workflow_trace(request_context: dict[str, Any], context: dict[str, Any], risk: dict[str, Any], model_output: dict[str, Any] | None, calls: list[str]) -> dict[str, Any]:
+        """Return a concise, UI-safe explanation of the Agent workflow."""
+        labels = {
+            "get_conversation": ("查询历史服务记录", "确认当前问题与历史沟通是否有关联"),
+            "get_customer_context": ("查询客户与订单上下文", "核对客户、商品和关联订单"),
+            "get_order": ("查询订单状态", "确认当前订单及履约事实"),
+            "get_work_orders": ("查询物流、退款与服务工单", "核对售后状态、物流节点和历史处理记录"),
+        }
+        steps: list[dict[str, str]] = []
+        for name in dict.fromkeys(calls):
+            if name in labels:
+                label, reason = labels[name]
+                steps.append({"tool": name, "label": label, "reason": reason, "status": "completed"})
+        recent = request_context.get("recent_messages", [])
+        latest = ""
+        if recent:
+            latest = str(recent[-1].get("message_text") or recent[-1].get("chat_content") or "")
+        need = str((model_output or {}).get("summary") or "")
+        if not need or need.startswith("已基于"):
+            if any(term in latest for term in ("退款", "退钱", "到账")):
+                need = "消费者正在咨询退款状态或到账进度。"
+            elif any(term in latest for term in ("物流", "快递", "签收", "发货")):
+                need = "消费者正在咨询物流状态或配送异常。"
+            elif any(term in latest for term in ("过敏", "刺痛", "发红", "瘙痒", "不适")):
+                need = "消费者反馈使用后不适，需要安抚并核查售后处理。"
+            elif "赠品" in latest:
+                need = "消费者正在咨询赠品缺失或补发处理。"
+            else:
+                need = "根据当前消费者消息核对相关业务事实并给出可执行回复。"
+        facts: list[str] = []
+        if context.get("orders"):
+            facts.append(f"已关联 {len(context['orders'])} 条订单记录")
+        if context.get("work_orders"):
+            facts.append(f"已核对 {len(context['work_orders'])} 条服务工单")
+        if context.get("messages"):
+            facts.append(f"已读取当前会话最近 {min(len(context['messages']), 6)} 条消息")
+        if risk.get("findings"):
+            facts.append(f"识别到 {len(risk['findings'])} 条风险依据")
+        return {
+            "customer_need": need,
+            "latest_message": latest[:180],
+            "tool_checks": steps,
+            "evidence_summary": facts or ["暂未获得足够业务事实，需要进一步核实"],
+            "risk_summary": {"level": risk.get("level", "low"), "reasons": [item.get("reason", "") for item in risk.get("findings", [])][:5]},
+            "reply_basis": "；".join(facts) if facts else "未找到可确认的业务事实，回复将明确说明需要进一步核实",
+        }
+
     def suggest(self, *, conversation_id: str | None = None, order_number: str | None = None, buyer_nickname: str | None = None) -> AgentResult:
         started = time.perf_counter()
         context: dict[str, Any] = {"messages": [], "orders": [], "work_orders": []}
@@ -346,6 +395,10 @@ class BeautyAgent:
                     context["orders"] = customer_context.get("orders", [])
                     context["work_orders"] = customer_context.get("work_orders", [])
                     calls.append("get_customer_context")
+                linked_work_orders = self.tools.get_work_orders(conversation_id)
+                if linked_work_orders:
+                    context["work_orders"] = linked_work_orders
+                calls.append("get_work_orders")
             if order_number:
                 order = self.tools.get_order(order_number)
                 if order:
@@ -368,5 +421,8 @@ class BeautyAgent:
             conn.execute("INSERT INTO agent_runs VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)", (run_id, provider_name, self.provider.model, input_tokens, output_tokens, latency_ms, json.dumps(calls, ensure_ascii=False), risk["level"]))
             conn.commit()
         model_risk = (model_output or {}).get("risk_level")
+        if model_output is not None:
+            model_output.setdefault("tools_used", list(dict.fromkeys(calls)))
         hybrid = hybrid_risk(context, model_risk, risk.get("level"), risk.get("findings", []))
-        return AgentResult(suggestion, risk, provider_name, self.provider.model, input_tokens, output_tokens, latency_ms, calls, run_id, valid, model_output, errors, usage_records, finish_reason, raw_final_content, "json_schema", repair_used, hybrid)
+        workflow = self._workflow_trace(request_context, context, risk, model_output, calls)
+        return AgentResult(suggestion, risk, provider_name, self.provider.model, input_tokens, output_tokens, latency_ms, calls, run_id, valid, model_output, errors, usage_records, finish_reason, raw_final_content, "json_schema", repair_used, hybrid, workflow)

@@ -194,3 +194,49 @@ M5 PASS（MANUAL_BROWSER_ACCEPTANCE）；M6 PASS；M7 PARTIAL — live Agent pip
 - 新增 `docs/BRAND_GUIDE.md` 与 `docs/PRODUCT_ARCHITECTURE.md`，并更新 README、Demo Script、Plugin Runtime 和 Skill references。
 - 本轮未修改 Agent、Qwen 调用、Tools、Hybrid Risk、Evaluation 或原始比赛数据。
 - 验证：`frontend/npm.cmd run typecheck` PASS；`frontend/npm.cmd run build` PASS；`python -m unittest discover -s tests -q` 30/30 PASS；浏览器 `/workbench` 与 `/risk-dashboard` 已显示知妍 AI、知妍·伴答、知妍·洞察品牌体系。
+
+## M12-P0 知妍·伴答核心 Copilot 能力升级（2026-10-01）
+
+- 保留现有 Qwen provider、业务 Tools、Hybrid Risk、Evaluation、Demo cached mode 和 Live Qwen mode；未改变品牌、风险算法、数据结构或评估数据。
+- `BeautyAgent` 现在返回 UI-safe workflow trace：客户需求、工具核查步骤、已获得事实摘要、风险摘要和回复依据；不返回 raw tool payload。
+- 会话入口会显式核查历史会话、客户/订单上下文和相关服务工单，回复生成继续使用真实物流、退款、不良反应和工单事实；缺少事实时明确要求进一步核实。
+- 知妍·伴答新增“客户洞察 / 信息核查 / 关键依据 / 风险判断 / 智能回复建议”展示；分析中显示“知妍正在分析”和简洁核查步骤。
+- 关键依据已从 raw JSON 改为中文摘要（订单数、工单号、命中信号等），插件不展示原始 Tool payload。
+- 新增离线测试覆盖：workflow trace、物流事实回复、退款事实回复、不良反应安抚与人工升级回复；未发起大规模 Qwen evaluation。
+- 验证：`python -m unittest discover -s tests -q` 33/33 PASS；frontend `npm.cmd run typecheck` PASS；Vite production build PASS；mock API S00011 返回真实物流单号与状态；浏览器 smoke 显示信息核查步骤和智能回复建议。
+
+## M13-P1 企业级工作台体验升级（2026-10-01）
+
+- 保留模拟千牛 Host + 知妍·伴答 Plugin 边界、真实赛题会话、Agent、Hybrid Risk、Dashboard 和 Demo cached/live 模式；未修改数据结构、风险算法或 Evaluation。
+- `/workbench` 左侧真实会话列表继续显示 8 条并支持展开，新增服务状态与风险等级标识；中间 Host 新增客户洞察卡（客户、消费等级、历史订单/服务、情绪、风险）及订单/商品上下文卡。
+- 知妍·伴答新增“知妍工作流”四步可视化：理解需求、查询信息、分析风险、生成回复，明确 waiting/running/completed 状态；整体 UI 收敛为企业 SaaS 卡片层级，减少渐变和调试感。
+- `/risk-dashboard` 真实风险列表、详情与 Workbench 原始会话闭环保持可用；未发起新的 live Qwen 请求。
+- 验证：backend `python -m unittest discover -s tests -q` 33/33 PASS；frontend `npm.cmd run typecheck` PASS；frontend `npm.cmd run build` PASS（Vite 生产构建成功）；浏览器 mock click-through 验证 `/workbench` 客户洞察、订单上下文、插件工作流和真实工具核查展示，`/risk-dashboard` 风险列表与详情加载正常。
+- API smoke：更新后的 `/api/workbench/sessions` 在 mock backend 返回真实会话的 `status` 与 `risk_level`（例如 S00362=medium），未读取或输出任何密钥。
+
+## M15 知妍 AI 品牌形象与 Mascot UI Integration（2026-10-02）
+
+- 新增统一品牌资产 `Logo.png`，复制至 `frontend/public/Logo.png`，并新增可复用 `frontend/src/components/brand/Brand.tsx`：`BrandIcon`、`ZhiyanMascot`、`AgentStatusMascot`。
+- `/workbench` Header、知妍·伴答插件标题、空状态、分析状态和智能回复建议均使用知妍 Mascot；空状态提供“知妍已准备好”与开始分析引导，分析中使用真实 loading 生命周期，保留 LIVE/DEMO 模式标识。
+- `/risk-dashboard` 风险详情增加知妍风险分析与品牌关键依据标识；Host + Plugin 边界保持不变，mascot 未覆盖客户消息区域。
+- 新增 `docs/BRAND_UI_GUIDE.md`，定义品牌色、Icon/Mascot 尺寸、状态动画与使用边界。
+- 未修改 Qwen provider、Tool calling、Hybrid Risk、数据集或评估流程；未发起新的 Agent evaluation。
+- 验证：backend `python -m unittest discover -s tests -q` 33/33 PASS；frontend `npm.cmd run typecheck` PASS；Vite production build PASS；浏览器 smoke 验证 `/workbench` Header/插件/空状态/工作流/回复品牌和 `/risk-dashboard` 风险详情品牌一致，未见页面级运行错误。
+
+## M15-P1 品牌 UI 微调（2026-10-02）
+
+- 替换无背景图标：用 `Logo（无背景）.png` 覆盖 `frontend/public/LogoMascot.png`（透明背景、白团子主体），删除 `make_logo_mascot.py` 与临时探针脚本。
+- 移除 `/workbench` Header 副标题"面向美妆客服场景的智能接待与风险洞察 Copilot"（仅保留中英文标题）。
+- 移除知妍·伴答空状态大图标（`ZhiyanMascot` 96px），仅保留标题与操作列表。
+- 移除风险详情"关键依据"前的 Logo 图标，修正 `ZHiyan COPILOT` 为 `ZHIYAN COPILOT`。
+- 删除建议回复卡片底部的"服务提供方 / 耗时"元信息行。
+- 验证：frontend `npm.cmd run build` PASS（TypeScript 编译 + Vite 生产构建均通过）；未修改后端、Agent 或评估逻辑。
+
+## Recovery / Integrity Check（2026-10-02）
+
+- 按只读模式检查 SQLite、原始 Excel、generated data、配置、Git 和备份线索；未执行 reset_demo、seed、import 或任何数据库写入。
+- `data/beauty_cs_agent.sqlite3` 存在，`PRAGMA integrity_check=ok`；核心记录与导入摘要一致：chat_messages 998、orders 113、工单表合计 80。
+- 原始 Excel SHA-256 与 `data/import_summary.json` 一致；未发现可恢复的数据库 backup/previous/WAL 副本。数据库未纳入 Git，无法从 Git 直接恢复 SQLite 版本。
+- 检查时本地 API 端口不可连接，且数据库路径为相对路径 `data/beauty_cs_agent.sqlite3`；当前最可能是服务未启动或启动工作目录不正确，而不是数据删除。
+- 诊断报告见 `docs/DATA_RECOVERY_REPORT.md`。未自动恢复，等待确认。
+- 后续验证已从仓库根目录使用 `.venv\Scripts\python.exe -m uvicorn app.api:app --host 127.0.0.1 --port 8000` 恢复服务；实际解析数据库为 `E:\beauty-cs-agent\data\beauty_cs_agent.sqlite3`。`/health`=200、工作台会话 total=100、风险 total=52；S00082 返回 10 条消息/1 订单/1 工单，客户摘要与风险详情均可读取真实数据。结论：无需修改路径或数据库，原问题是 API 未监听或启动工作目录不正确。

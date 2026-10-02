@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import { riskCategoryLabel, riskLevelLabel, riskStatusLabel } from './pluginRuntime'
+import { BrandIcon } from './components/brand/Brand'
 
 const api = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 type Risk = { id: string; level: string; category: string; reason: string; recommended_action: string; evidence?: Record<string, unknown>; status?: string; note?: string; buyer_nickname?: string; session_id?: string }
@@ -15,7 +16,7 @@ type DetailProps = { selected: RiskDetail; status: string; note: string; saving:
 
 function RiskDetailInline({ selected, status, note, saving, setStatus, setNote, save }: DetailProps) {
   return <aside className="panel risk-detail inline-risk-detail">
-    <div className="panel-title"><div><span className="eyebrow">知妍风险分析</span><h2>风险详情</h2></div><span className={`badge ${selected.level}`}>{riskLevelLabel(selected.level)}</span></div>
+    <div className="panel-title"><div className="risk-detail-brand"><BrandIcon size={32}/><div><span className="eyebrow">知妍风险分析</span><h2>风险详情</h2></div></div><span className={`badge ${selected.level}`}>{riskLevelLabel(selected.level)}</span></div>
     <p className="detail-copy">客户：{selected.buyer_nickname || '客户信息缺失'}<br />会话：{selected.session_id || '未关联'}<br />类别：{riskCategoryLabel(selected.category)}</p>
     <h3>风险原因</h3><ul>{(selected.risk_reasons || [selected.reason]).map((reason, index) => <li key={index}>{reason}</li>)}</ul>
     <h3>关键依据</h3><pre>{JSON.stringify(selected.evidence || {}, null, 2)}</pre>
