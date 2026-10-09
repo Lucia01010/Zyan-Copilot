@@ -240,3 +240,152 @@ M5 PASS（MANUAL_BROWSER_ACCEPTANCE）；M6 PASS；M7 PARTIAL — live Agent pip
 - 检查时本地 API 端口不可连接，且数据库路径为相对路径 `data/beauty_cs_agent.sqlite3`；当前最可能是服务未启动或启动工作目录不正确，而不是数据删除。
 - 诊断报告见 `docs/DATA_RECOVERY_REPORT.md`。未自动恢复，等待确认。
 - 后续验证已从仓库根目录使用 `.venv\Scripts\python.exe -m uvicorn app.api:app --host 127.0.0.1 --port 8000` 恢复服务；实际解析数据库为 `E:\beauty-cs-agent\data\beauty_cs_agent.sqlite3`。`/health`=200、工作台会话 total=100、风险 total=52；S00082 返回 10 条消息/1 订单/1 工单，客户摘要与风险详情均可读取真实数据。结论：无需修改路径或数据库，原问题是 API 未监听或启动工作目录不正确。
+
+## Risk Detail Context Navigation（2026-10-02）
+
+- 知妍·伴答的“打开风险详情”现在携带 `risk_id`、`session_id` 和可用 `order_id`，优先跳转 `/risk-dashboard?risk_id=...`；无 risk_id 时按当前客户关联风险查找，找不到则显示“当前会话暂无已生成风险事件”，不跳转总览。
+- `/risk-dashboard` 读取 query 参数后自动加载并展开对应风险详情；详情保留客户、会话、订单/工单、风险原因、关键依据、服务轨迹、处理建议和状态，并提供“返回原始会话”。独立“打开知妍·洞察”入口仍跳转总览。
+- 后端建议结果增加导航元数据 `risk_id/risk_ids`，不改变 Agent、Hybrid Risk 或 Evaluation；多风险按当前模型风险等级及风险等级排序选择优先事件。
+- 浏览器 click-through：S00082 → 分析 → 打开风险详情，URL 包含 `risk_id=方b**:adverse_reaction`、`session_id=S00082`、订单号；风险详情自动展开并显示真实订单/工单/轨迹；点击“返回原始会话”回到 `/workbench?session_id=S00082`。
+- 验证：backend 33/33 PASS；frontend typecheck PASS；Vite build PASS；未发起 live Qwen evaluation。
+
+## M16 知妍·伴答 Quick Action Agent 重构（2026-10-02）
+
+- 从当前 998 条聊天及关联订单/工单字段提炼客服行动类型，新增 `docs/CUSTOMER_SERVICE_ACTION_CATALOG.md` 和 `docs/ZHIYAN_COPILOT_INTERACTION.md`。当前实现 10 个可执行 Action，均绑定真实 SQLite 来源；不存在生产 API、直播后台、批次追溯或预计送达时间时不展示伪按钮。
+- 新增 `app/action_registry.py` 作为 Action/Tool allowlist；`BusinessTools` 增加订单、物流、退款、打款、退货、换货、售后工单、不良反应、历史沟通和历史承诺的最小结构化查询投影。所有执行请求绑定 `session_id`，NOT_FOUND 明确返回进一步核实。
+- 新增 `/api/workbench/{session_id}/actions`、`POST /api/copilot/actions/{action_id}`、`POST /api/copilot/chat`。快捷按钮直接执行真实业务 Tool，Agent Chat 只展示简洁结果和数据来源，不展示 raw payload。
+- 右侧知妍·伴答已改为“客户洞察 → 知妍建议行动 → 知妍 Agent → 知妍生成建议回复”；删除“知妍工作流”“信息核查”独立大卡片和中央聊天区“知妍分析当前会话”按钮。会话切换后插件清空短对话并重新加载 Action。
+- 浏览器 mock click-through：真实会话 S00362 点击“查看退款状态”返回待审核退款记录 HV8045912170；真实会话 S00082 点击“查看不良反应记录”返回待处理工单 BLFY70604980；两条结果的 `session_id` 和数据来源分别隔离，无串线。
+- 新增 `tests/test_action_registry.py`；backend `37/37 PASS`，frontend typecheck PASS，Vite production build PASS；未发起新的 live Qwen evaluation，未修改原始数据、Hybrid Risk 或 Evaluation。
+
+### Workbench Host 边界微调（2026-10-04）
+
+- 移除中部模拟千牛 Host 聊天区上方的“客户洞察”和“订单与商品上下文”卡片；中部现在只保留会话抬头、消费者/客服消息和回复编辑器。
+- 客户洞察与建议行动继续只在右侧知妍·伴答插件提供，避免 Host 与 Plugin 的信息职责混淆。
+- 验证：frontend `npm.cmd run typecheck` PASS；Vite production build PASS；浏览器 `/workbench?session_id=S00362` smoke 确认中部无上述卡片，右侧插件仍展示客户洞察与建议行动。
+- 订单商品信息已移入右侧知妍·伴答，并统一命名为“订单商品”；浏览器验证右侧展示真实商品“【预售】测试修护精华双支装30ml*2”和订单状态，中部仍不显示该卡片。
+
+### 知妍·伴答 UI 微调（2026-10-04）
+
+- 删除建议行动下方与客户洞察重复的“风险：xx”标签；同步移除 `.risk-compact` 顶部分隔横线及配套 padding。
+- 修复客户洞察三个方框内因 `.panel label` 全局 margin 导致的顶部空行（`.insight-grid label{margin:0}`）。
+- 知妍 Agent 对话改为左右气泡布局：客服靠右深紫气泡、知妍靠左浅紫气泡，消息不再上下整行堆叠。
+- 移除 Agent 回复末尾的“以上信息来自当前比赛实例数据。/来自 chat_messages”等来源声明（`app/action_registry.py`），并删除前端气泡中的“数据来源：{source}”行；接口字段保留不变。
+- 验证：`python -m pytest tests/test_action_registry.py -q` 4 passed；frontend TS diagnostics 无错误。
+
+### 访问方式永久修复：单进程托管 + 一键启动（2026-10-05）
+
+- 根因：前端 Vite（5173）是独立手工进程，重启/进程回收后不自启（后端 8000 常在跑），导致反复出现 5173 打不开。
+- `app/api.py` 新增 SPA 托管：`frontend/dist` 存在时，FastAPI 在所有 API 路由之后注册 `/{full_path:path}` 兜底——静态文件直接返回，其余路径回退 `index.html`，`api/*` 未命中返回 404（不回退页面）。
+- `frontend/vite.config.ts` 固定 `host=127.0.0.1`、`port=5173`、`strictPort`，杜绝端口静默漂移到 5174。
+- 新增双击启动脚本 `scripts/start_zhiyan.cmd`：检测 8000 未监听时以 mock 模式启动 uvicorn，等待 `/health` 后自动打开 `http://localhost:8000/workbench`；无需 Node/Vite 常驻。
+- 统一访问入口为 **http://localhost:8000/workbench**（5173 仅开发时使用，`npm run dev`）；前端改动后需重新 `npm run build` 才会在 8000 生效。
+- 验证：frontend build PASS；backend `python -m unittest discover -s tests -q` 37/37 PASS；HTTP smoke：`/workbench` 200、`/risk-dashboard` SPA 200、assets 200、`/api/workbench/sessions` total=100、未知 api 404；浏览器实测页面/会话切换/插件加载正常，console error=0。
+
+## 12-Factor Agent 差距评估（2026-10-09）
+
+依据仓库根目录 `12-factors-agent.docx`（Dex Horthy《12-Factor Agents》中文演绎版，共 12 条原则）对当前架构逐条对照。注意：原文交叉引用编号在文档中存在错位，以原则内容为准。
+
+### 已符合项
+
+- **原则 1/2（组织规划与工具调用、工具执行器）**：`BusinessTools` 提供工具定义，`action_registry` 承担注册表 + `execute_action` 执行器，Agent 输出结构化动作意图——"思考/行动分离"模式已落地。
+- **原则 12（无状态归约器，部分）**：FastAPI 无状态服务，业务状态统一外部化到 SQLite（`data/beauty_cs_agent.sqlite3`）。
+- **原则 11（从任何地方触发，部分）**：知妍·伴答以插件形式嵌入千牛工作台面板（宿主触发）；HTTP API 可独立调用。
+
+### 差距项（候选 backlog）
+
+| # | 原则 | 差距 | 建议动作 | 优先级 |
+|---|------|------|---------|--------|
+| G1 | 原则 4 拥有提示词 | ~~系统提示词硬编码在 `app/qwen_agent.py`~~ **已落地（2026-10-09）**，见下方 G1 落地记录 | 已完成 | ✅ |
+| G2 | 原则 5 上下文评估与仲裁 | ~~长会话仅按轮次拼接历史，无重要性分级~~ **已落地（2026-10-09）**，见下方 G2 落地记录 | 已完成 | ✅ |
+| G3 | 原则 6 错误压缩入上下文 | ~~工具执行失败时错误未结构化回馈给 Agent 自纠~~ **已落地（2026-10-09）**，见下方 G3 落地记录 | 已完成 | ✅ |
+| G4 | 原则 7 统一执行/业务状态 | ~~多步执行步骤状态未统一持久化~~ **已落地（2026-10-09）**，见下方 G4 落地记录 | 已完成 | ✅ |
+| G5 | 配置外置化（原则 3 相关基础设施） | ~~配置散落在代码 env 读取与启动脚本注入，无统一 .env 加载；`.env.example` 曾混入真实密钥~~ **已落地（2026-10-09）**，见下方 G5 落地记录 | 已完成 | ✅ |
+| G5b | 原则 3 人机协同工具化（原 G5） | ~~人工介入（客服编辑回复）是前端自由文本，未建模为结构化"人类工具调用"，审计链不完整~~ **已落地（2026-10-09）**，见下方 G5b 落地记录 | 已完成 | ✅ |
+| G6 | 原则 8 任务生命周期 API | 无任务级 pause/resume/cancel 端点（当前均为同步短请求） | 比赛演示无需长任务，可暂缓；仅在做异步长任务时补 | 低 |
+| G7 | 原则 9 显式状态机 | 控制流由 mock 分支与 LLM 隐式决策混合，未用显式 FSM 描述 | 可为 Quick Action 流程补充显式状态文档（不必引入框架） | 低 |
+| G8 | 原则 10 小而专注 Agent | 单体 `BeautyAgent` 承担意图/回复/风险多职责，比赛规模可接受 | 保持现状；扩展新业务域时再按 DDD 拆分 | 低（暂不动） |
+
+### G1 落地记录（2026-10-09）
+
+- 新增 `app/prompts/` 目录，三个提示词模板外置（内容与原硬编码逐字一致，行为零变化）：
+  - `stage_a_tools.txt`：阶段 A 工具调用系统提示词；
+  - `final_synthesis.txt`：最终合成阶段提示词（含 `{schema_contract}` 占位符）；
+  - `json_repair.txt`：JSON 修复提示词（含 `{schema_contract}` 占位符）。
+- `app/qwen_agent.py` 新增 `load_prompt(name, **values)`：读取模板并替换 `{placeholder}`，首次读取后缓存；占位符替换用 `str.replace` 而非 `str.format`，避免模板中字面花括号冲突。
+- 三处调用点（`run()` 内 system / synthesis_system / repair_system）改为 `load_prompt(...)`。mock 模式不经过提示词路径，演示行为不受影响；仅 Live Qwen 模式生效。
+- 新增守护测试 `test_prompts_are_externalized_and_placeholder_replaced`（tests/test_qwen_agent.py）：校验模板存在、非空、占位符被替换、关键措辞保留。
+- 验证：`python -m unittest discover -s tests -q` 38/38 PASS。
+- 后续迭代提示词时直接改 `app/prompts/*.txt` 并提交，代码零改动；如需回滚 `git revert` 对应提交即可。
+
+### G3 落地记录（2026-10-09）
+
+- 新增 `app/error_compactor.py`（无内部依赖，供 qwen_agent 与 action_registry 共用）：`compact_tool_error(tool_name, exc)` 把异常提炼为紧凑 JSON `{error_summary, error_type, message, offending_parameter?, suggestion}`——message 取首行并截断 200 字符，None 字段省略以省 token；规则化 suggestion：意外参数→改用 schema 参数名、缺参→补齐、KeyError→数据缺失不要编造、JSONDecodeError→按 schema 重试、兜底→如实告知会进一步核实。
+- `app/qwen_agent.py` 工具循环失败分支：原先回注无信息量的 `{"error": "tool failed"}`，现改为回注压缩错误 JSON，LLM 可据此改参自纠；`args` 初始化移入 try 前，修复解析失败时未绑定问题；`errors` 审计列表保留 `tool_error:<name>:<Type>`。
+- `app/action_registry.py`：`execute_action` 工具异常时不再向上抛裸异常（原会 500），返回 `status="ERROR"` + 压缩错误载荷的完整结果；`format_action_result` 新增 ERROR 分支，用户侧文案诚实为"业务查询服务暂时异常…"（区别于 NOT_FOUND 的"未找到相关记录"）。API 契约不变（仍 200 + status 字段），KeyError 未知 action 仍按原样 404。
+- 新增 `tests/test_error_compactor.py`（6 例：意外参数/缺参/KeyError/JSON 解析/兜底压缩/长消息截断）；`tests/test_action_registry.py` 补 2 例（ERROR 载荷结构、ERROR 文案）。
+- 验证：`python -m unittest discover -s tests -q` 46/46 PASS。
+- 生效范围：Live Qwen 模式的工具自纠链路与 Quick Action 执行兜底；mock 演示路径不受影响。
+
+### 启动脚本修复：双击 start_zhiyan.cmd 无效（2026-10-09）
+
+- 症状：双击 `scripts/start_zhiyan.cmd` 不打开网页，`http://localhost:8000/workbench` 不可达。
+- 根因（字节级证据）：脚本文件为 **LF（Unix）换行**（start_zhiyan.cmd 44 处 bare-LF、CRLF=0）+ UTF-8 中文 + `chcp 65001` + `goto` 标签 + `if (...)` 多行块。cmd.exe 对 LF-only 批处理的标签定位与块解析不可靠，双击后脚本解析错乱提前终止——服务未启动、浏览器未打开。后端本身无问题（直接以 venv python 启动 uvicorn 后 health/workbench 均 200）。
+- 修复：`scripts/start_zhiyan.cmd` 与新增 `scripts/run_service.cmd` 以 **CRLF + 纯 ASCII** 重写（移除 chcp 与中文输出，消除编码/码页隐患）：
+  - 启动器：netstat 探测端口（不依赖 curl）→ 未监听则 `start /MIN` 最小化窗口运行 run_service.cmd → 轮询就绪后 `start` 打开浏览器；超时（约 60s）时自动打印服务日志并 pause。
+  - run_service.cmd：设置 mock 环境变量，uvicorn 输出重定向到 `logs/zhiyan_service.log`——服务崩溃不再随窗口消失，失败可查。
+- 限制：本开发沙箱会拦截所有 Start-Process 生成的窗口进程（连最小 ASCII 测试 cmd 都不执行），无法在沙箱内端到端验证双击路径；已验证字节格式（CRLF=43/9、bare-LF=0、non-ASCII=0）、脚本结构与后端服务可用性，最终以用户双击实测为准。若再失败，窗口会直接显示错误日志。
+- 修复后服务已由会话后台进程拉起，health 200 / workbench 200。
+
+### G2 落地记录（2026-10-09）
+
+- 新增 `app/context_arbiter.py`（规则版仲裁器，无内部依赖），替代 `suggest()` 中 `[-6:]`/`[:3]` 的 FIFO 一刀切：
+  - **消息分级** `_score`：最新消息=5；核心诉求关键词（退款/退货/过敏/赔偿/发货等 24 项）=5；业务实体（订单号/单号/金额正则）或关联记录=4；寒暄短消息（≤12 字且命中寒暄词）=1；其余=3。
+  - **两阶段预算**：阶段 A 完整窗口 ≤ max_messages(6)，最新消息 + 必须保留项优先、背景消息按新旧补位；阶段 B 压缩区 ≤ max_entries(12)，未进窗口的必须保留项做规则摘要（截断 80 字 + 附加"关键实体：…"，标记 `text_truncated`），其余丢弃。原始核心诉求永不因窗口不足被挤出。
+  - **订单排序** `arbitrate_orders`：入参指定订单 > 会话内被提及订单 > 其余，超出 3 条丢弃低相关项。
+  - 仲裁统计 `context_arbitration: {messages: {total/kept/compressed/dropped}, orders: {…}}` 随 request_context 进入 workflow trace，可观测。
+- `app/qwen_agent.py` `suggest()` 接线：`recent_messages`/`orders` 改由仲裁器产出；风险引擎 `assess_context` 仍吃全量 context 不受影响；mock 模式兼容（recent_messages 结构不变）。
+- 新增 `tests/test_context_arbiter.py` 8 例：短会话直通、最新消息必留、核心诉求不被挤出（关键回归）、寒暄先丢、实体溢出压缩不丢弃、顺序保持、订单排序与直通。
+- 验证：`python -m unittest discover -s tests -q` 54/54 PASS。
+- 已知限制：摘要压缩为规则版（截断 + 实体保留），未用 LLM 摘要；`max_messages=6` 与原 token 预算持平，压缩区最多 12 条有硬顶。
+
+### G4 落地记录（2026-10-09）
+
+- 新增 `app/task_state.py`（原则 7）：`agent_tasks` 表（task_id 主键 + execution_state + business_state_json + error + run_id + 时间戳），与业务数据同库持久化；连接用显式关闭的 contextmanager（`with conn:` 只管事务不释放 Windows 文件锁）。
+- 执行状态机：`started → context_ready → synthesis_done → completed / failed`。business_state 增量合并——started 记录入参、context_ready 记录上下文规模/风险等级/仲裁统计、synthesis_done 记录 provider/用量/工具调用、completed 记录结果摘要，failed 记录错误（截断 300 字符）并继续向上抛出（API 行为不变）。
+- `qwen_agent.suggest()` 拆为包装层（task 生命周期管理）+ `_suggest_inner`（原执行体，内嵌 2 处状态推进）；`AgentResult` 新增 `task_id` 字段（带默认值，不破坏既有位置参数构造），经 `dict(result.__dict__)` 自动透出给前端。
+- 新增观测端点：`GET /api/agent/tasks`（列表，最新在前，limit 上限 100）、`GET /api/agent/tasks/{task_id}`（单任务详情，404 兜底）。
+- 新增 `tests/test_task_state.py` 6 例：状态合并回读、failed 落库、非法状态拒绝、缺失任务 None、列表排序限数、suggest 全生命周期集成断言（mock 路径四个阶段业务状态齐全）。
+- 验证：`python -m unittest discover -s tests -q` 60/60 PASS；重启服务后实测 `GET /api/agent/tasks?limit=2` 返回 completed 任务（risk_level/provider 字段齐全）。
+- 已知限制：同步短请求场景，暂不做断点续传执行（重启后轨迹可查但不自动恢复）；状态推进点在 suggest 单入口内，Quick Action 路径未纳入（其为确定性单步调用，agent_runs 已覆盖）。
+
+### G5 落地记录：配置外置化（2026-10-09）
+
+- 新增 `app/config.py`（无第三方依赖的微型 .env 加载器）：`parse_env` 解析 KEY=VALUE（忽略空行/# 注释、剥离首尾空白与成对引号）；`load_env` 把仓库根目录 `.env` 中进程环境尚不存在的键注入 `os.environ`，**已存在的真实环境变量优先**（启动脚本注入的 `AGENT_PROVIDER=mock` 不被覆盖）。
+- `app/qwen_agent.py` 与 `app/api.py` 在模块导入时先 `load_env()`，再读取任何配置（api.py 的 `DB_PATH` 与 QwenProvider 的 12 项 env 读取全部经由 .env 可配置）。
+- `.env.example` 修复安全问题并补全：此前该文件混入了真实 QWEN_API_KEY（违反占位符规则），已替换为 `sk-your-key-here`；补全 QWEN_MOCK、QWEN_ENABLE_THINKING、QWEN_DEBUG_DIR 等全部键并附中文注释。`.env` 真实值未改动。
+- 优先级语义：真实环境变量 > .env > 代码默认值。`scripts/run_service.cmd` 注入的 mock 强制继续生效；手动裸启 uvicorn 时将采用 .env 的 `AGENT_PROVIDER=qwen`（.env 即唯一配置源）。
+- 新增 `tests/test_config.py` 4 例：解析（引号/注释/空白）、真实 env 优先不被覆盖、缺失文件 no-op、.env.example 占位符与键全覆盖守护。
+- 验证：`python -m unittest discover -s tests -q` 68/68 PASS；重启后 `/health` provider=mock（脚本注入优先级正确）。
+
+### G5b 落地记录：原则 3 人机协同工具化（2026-10-09）
+
+- 新增 `app/human_feedback.py`：`human_feedback` 表（feedback_id 主键、conversation_id、original_reply、edited_reply、created_at）与业务数据同库持久化，连接用显式关闭的 contextmanager（Windows 文件锁随关闭释放）；`record_feedback` 校验非空并生成 `fb_` 前缀 ID，`list_feedback` 支持按会话过滤/限量（供审计查询）。
+- 新增 `POST /api/copilot/feedback`：校验会话存在（404）与回复非空（400），落库后返回 `{feedback_id, conversation_id, recorded}`。
+- 前端接线（`frontend/src/main_m11.tsx`）：插件「复制到回复框」时记录本次插入的建议文本（lastInserted，切换会话时清空）；点击「发送给消费者」时，若本次会话插入过 AI 建议，自动以 `{conversation_id, original_reply: 插入的建议, edited_reply: 最终文本}` 调用反馈端点（失败静默，不阻断模拟发送）；未采纳建议的普通发送不产生记录。
+- 审计链闭合：AI 建议（agent_runs/agent_tasks 已有）→ 人工修订（human_feedback）→ 发送；未经编辑直接采纳也会留痕（可计算采纳率）。
+- 新增 `tests/test_human_feedback.py` 4 例：落库回读、按会话过滤与限量、空回复拒绝、跨连接持久化。
+- 验证：unittest 68/68 PASS；frontend typecheck + Vite production build PASS；重启服务后实测 POST /api/copilot/feedback 返回 feedback_id（S00082，内容带 [smoke] 标记，保留作功能演示数据）。
+- 已知限制：反馈为 best-effort 上报（网络失败静默，不做重试）；快捷行动结果经复制后同样被记录为"原始建议"；暂无读取端点（`list_feedback` 模块级可用，UI 展示按需再加）。
+
+### Git 历史安全重写（2026-10-10）
+
+- 背景：`.env.example` 曾在历史提交（已推送到 GitHub）中混入真实 QWEN_API_KEY，违反占位符规则；G5 落地时工作区文件已改回占位符，本轮继续清除历史。
+- 操作：`git stash` 暂存未提交工作 → `git bundle` 备份至 Temp → `git filter-repo --replace-text` 将历史中的真实 Key 替换为 `sk-your-key-here` → `git stash pop` 恢复工作区（改动完整保留）。
+- 额外发现：Trae/Codex 编辑器快照引用 `refs/codex/turn-diffs/checkpoints/...` 持有含 Key 的旧 `.env.example` blob，filter-repo 不会重写此类工具快照；已删除该引用并 `repack -a -d -f` + `prune --expire=now`，旧 blob 确认从对象库消失（122→120 对象）。
+- 远端：force push 覆盖 `origin/master`（d923243 → 8af1484），GitHub 上的旧历史已被替换。提交信息、作者、日期保留，工作区 33 项改动不变。
+- 建议：尽管历史已清除，GitHub 可能缓存旧提交视图（fork/PR 引用不可控），**仍建议到阿里云控制台轮换该 Key**；新 Key 只放 `.env`。Temp 中的重写前备份 bundle 含旧 Key，确认无误后应删除。
+
+### 结论
+
+G1–G5（含 G5b 人机协同）已完成，剩余 G6–G8 优先级均为低（演示阶段不动）；若后续迭代，建议顺序 G7。

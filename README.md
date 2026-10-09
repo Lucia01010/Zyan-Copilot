@@ -16,13 +16,16 @@
 
 ## Windows 比赛 Demo 最短启动步骤
 
+首次使用先完成环境准备：
+
 ```powershell
 Copy-Item .env.example .env
 powershell -ExecutionPolicy Bypass -File scripts/setup.ps1
-powershell -ExecutionPolicy Bypass -File scripts/start_demo.ps1
 ```
 
-打开 `http://127.0.0.1:5173/workbench` 或 `http://127.0.0.1:5173/risk-dashboard`，后端健康检查为 `http://127.0.0.1:8000/health`。启动脚本默认使用 `DEMO CACHED MODE`，不依赖 Qwen 网络。
+日常启动只需**双击 `scripts/start_zhiyan.cmd`**（单进程：后端同时托管已构建的前端，自动打开浏览器），访问 `http://localhost:8000/workbench` 或 `http://localhost:8000/risk-dashboard`，健康检查为 `http://127.0.0.1:8000/health`。默认 `DEMO CACHED MODE`，不依赖 Qwen 网络。
+
+> 前端代码改动后，在 `frontend/` 执行 `npm run build`，刷新 8000 页面即可生效；需要热更新开发体验时再用 `npm run dev`（5173）。
 
 ## Demo Mode 与 Live Qwen Mode
 

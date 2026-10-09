@@ -88,13 +88,87 @@ class BusinessTools:
                 results.extend({"source_table": table, **dict(row)} for row in rows)
         return results
 
-    def list_tools(self, compact: bool = False) -> dict[str, Callable[..., Any]]:
+    # The action layer deliberately exposes small, grounded projections.  The
+    # underlying tables remain read-only and every result carries its source.
+    def _session_context(self, session_id: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        messages = self.get_conversation(session_id)
+        if not messages:
+            return {"orders": [], "work_orders": [], "messages": []}, []
+        buyer = messages[0].get("buyer_nickname")
+        context = self.get_customer_context(str(buyer)) if buyer else {"orders": [], "work_orders": [], "messages": messages}
+        linked = self.get_work_orders(session_id)
+        return context, linked
+
+    @staticmethod
+    def _action_result(action_id: str, source: str, data: Any, *, found: bool = True, message: str | None = None) -> dict[str, Any]:
+        return {"action_id": action_id, "status": "OK" if found else "NOT_FOUND", "source": source, "data": data if found else {}, "message": message or ("已从比赛实例数据查询到相关记录。" if found else "当前比赛实例数据未找到相关记录。")}
+
+    def get_order_info(self, session_id: str) -> dict[str, Any]:
+        context, _ = self._session_context(session_id)
+        orders = self._project("orders", context.get("orders", []))
+        return self._action_result("check_order", "orders", orders, found=bool(orders))
+
+    def get_logistics_info(self, session_id: str) -> dict[str, Any]:
+        context, linked = self._session_context(session_id)
+        rows = [row for row in linked if row.get("source_table") == "logistics_work_orders"]
+        orders = [{key: order.get(key) for key in ("order_number", "product_name", "order_status", "tracking_number") if order.get(key) is not None} for order in context.get("orders", []) if order.get("tracking_number")]
+        data = {"work_orders": self._project("work_orders", rows), "orders": orders}
+        return self._action_result("check_logistics", "orders + logistics_work_orders", data, found=bool(rows or orders))
+
+    def get_refund_status(self, session_id: str) -> dict[str, Any]:
+        _, linked = self._session_context(session_id)
+        rows = [row for row in linked if row.get("refund_issue_type") or row.get("refund_amount_yuan") or row.get("transfer_status")]
+        return self._action_result("check_refund", "after_sales_return_work_orders + offline_payment_work_orders", self._project("work_orders", rows), found=bool(rows))
+
+    def get_payment_status(self, session_id: str) -> dict[str, Any]:
+        _, linked = self._session_context(session_id)
+        rows = [row for row in linked if row.get("transfer_status") or row.get("refund_amount_yuan")]
+        return self._action_result("check_payment", "offline_payment_work_orders", self._project("work_orders", rows), found=bool(rows))
+
+    def get_return_status(self, session_id: str) -> dict[str, Any]:
+        _, linked = self._session_context(session_id)
+        rows = [row for row in linked if row.get("source_table") == "after_sales_return_work_orders"]
+        return self._action_result("check_return", "after_sales_return_work_orders", self._project("work_orders", rows), found=bool(rows))
+
+    def get_replacement_status(self, session_id: str) -> dict[str, Any]:
+        _, linked = self._session_context(session_id)
+        rows = [row for row in linked if row.get("source_table") == "replacement_work_orders"]
+        return self._action_result("check_replacement", "replacement_work_orders", self._project("work_orders", rows), found=bool(rows))
+
+    def get_ticket_status(self, session_id: str) -> dict[str, Any]:
+        _, linked = self._session_context(session_id)
+        return self._action_result("check_ticket", "work_orders", self._project("work_orders", linked), found=bool(linked))
+
+    def get_adverse_reaction_record(self, session_id: str) -> dict[str, Any]:
+        _, linked = self._session_context(session_id)
+        rows = [row for row in linked if row.get("source_table") == "adverse_reaction_work_orders"]
+        return self._action_result("check_adverse_reaction", "adverse_reaction_work_orders", self._project("work_orders", rows), found=bool(rows))
+
+    def get_service_history(self, session_id: str) -> dict[str, Any]:
+        messages = self.get_conversation(session_id)
+        return self._action_result("check_service_history", "chat_messages", self._project("conversation", messages[-12:]), found=bool(messages))
+
+    def get_service_promises(self, session_id: str) -> dict[str, Any]:
+        messages = self.get_conversation(session_id)
+        terms = ("承诺", "回访", "补发", "到账", "24小时", "明天")
+        matches = [message for message in messages if any(term in str(message.get("message_text") or "") for term in terms)]
+        return self._action_result("check_service_promises", "chat_messages", self._project("conversation", matches[-8:]), found=bool(matches))
+
+    def list_tools(self, compact: bool = False, include_actions: bool = False) -> dict[str, Callable[..., Any]]:
         tools = {
             "get_order": self.get_order,
             "get_conversation": self.get_conversation,
             "get_customer_context": self.get_customer_context,
             "get_work_orders": self.get_work_orders,
         }
+        if include_actions:
+            tools.update({
+                "get_order_info": self.get_order_info, "get_logistics_info": self.get_logistics_info,
+                "get_refund_status": self.get_refund_status, "get_payment_status": self.get_payment_status,
+                "get_return_status": self.get_return_status, "get_replacement_status": self.get_replacement_status,
+                "get_ticket_status": self.get_ticket_status, "get_adverse_reaction_record": self.get_adverse_reaction_record,
+                "get_service_history": self.get_service_history, "get_service_promises": self.get_service_promises,
+            })
         if not compact:
             return tools
         return {

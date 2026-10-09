@@ -8,23 +8,46 @@ from typing import Any
 
 from app.qwen_agent import BeautyAgent
 from app.business_tools import BusinessTools
+from app.action_registry import execute_action, format_action_result, recommend_actions
+from app.config import load_env
+from app.human_feedback import record_feedback
 from app.risk_engine import assess_context
+from app.task_state import get_task, list_tasks
 
 try:
     from fastapi import FastAPI, HTTPException
     from fastapi.middleware.cors import CORSMiddleware
+    from fastapi.responses import FileResponse
     from pydantic import BaseModel
 except ImportError:  # Optional local dependency; requirements.txt documents it.
     FastAPI = None
 
 
+load_env()  # 配置外置化：读取任何配置前先加载仓库根目录 .env（已存在的真实环境变量优先）
+
 DB_PATH = Path(os.getenv("BEAUTY_DB_PATH", "data/beauty_cs_agent.sqlite3"))
+FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
 
 
 class SuggestRequest(BaseModel if FastAPI else object):
     conversation_id: str | None = None
     order_number: str | None = None
     buyer_nickname: str | None = None
+
+
+class CopilotActionRequest(BaseModel if FastAPI else object):
+    session_id: str
+
+
+class CopilotChatRequest(BaseModel if FastAPI else object):
+    session_id: str
+    message: str
+
+
+class CopilotFeedbackRequest(BaseModel if FastAPI else object):
+    conversation_id: str
+    original_reply: str
+    edited_reply: str
 
 
 def build_risk_detail(event: dict[str, Any], tools: BusinessTools) -> dict[str, Any]:
@@ -84,12 +107,45 @@ def create_app():
         except Exception as exc:
             raise HTTPException(status_code=503, detail=str(exc))
 
+    @app.get("/api/agent/tasks")
+    def agent_tasks(limit: int = 20) -> list[dict[str, Any]]:
+        """原则 7：任务级全局状态观测列表（最新在前）。"""
+        return list_tasks(DB_PATH, limit=limit)
+
+    @app.get("/api/agent/tasks/{task_id}")
+    def agent_task(task_id: str) -> dict[str, Any]:
+        task = get_task(DB_PATH, task_id)
+        if task is None:
+            raise HTTPException(status_code=404, detail=f"unknown task: {task_id}")
+        return task
+
     @app.post("/api/workbench/suggest")
     def suggest(request: SuggestRequest) -> dict[str, Any]:
         try:
             payload = request.model_dump() if hasattr(request, "model_dump") else request.dict()
             result = agent.suggest(**payload)
-            return result.__dict__
+            response = dict(result.__dict__)
+            # Expose the linked risk event as navigation metadata only. The
+            # Agent/Risk engine output itself remains unchanged.
+            buyer = request.buyer_nickname
+            if not buyer and request.conversation_id:
+                messages = tools.get_conversation(request.conversation_id)
+                buyer = messages[0].get("buyer_nickname") if messages else None
+            linked = [event for event in risk_events() if buyer and event.get("buyer_nickname") == buyer]
+            target_level = (result.hybrid_risk or {}).get("final_risk") or result.risk.get("level")
+            rank = {"critical": 4, "high": 3, "medium": 2, "low": 1}
+            linked.sort(key=lambda event: (event.get("level") == target_level, rank.get(event.get("level"), 0)), reverse=True)
+            response["risk_id"] = linked[0]["id"] if linked else None
+            response["risk_ids"] = [event["id"] for event in linked]
+            findings = []
+            for finding in response.get("risk", {}).get("findings", []):
+                item = dict(finding)
+                item["risk_id"] = f"{buyer}:{item.get('rule_id')}" if buyer and item.get("rule_id") else None
+                findings.append(item)
+            response["risk"] = {**response.get("risk", {}), "findings": findings}
+            if request.conversation_id:
+                response["recommended_actions"] = recommend_actions(tools, request.conversation_id)
+            return response
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
 
@@ -118,6 +174,49 @@ def create_app():
         buyer = messages[0].get("buyer_nickname")
         context = tools.get_customer_context(buyer) if buyer else {"orders": [], "work_orders": [], "messages": messages}
         return {"conversation_id": conversation_id, "buyer_nickname": buyer, "messages": messages, "orders": context["orders"], "work_orders": context["work_orders"]}
+
+    @app.get("/api/workbench/{session_id}/actions")
+    def workbench_actions(session_id: str) -> dict[str, Any]:
+        if not tools.get_conversation(session_id):
+            raise HTTPException(status_code=404, detail="session not found")
+        return {"session_id": session_id, "items": recommend_actions(tools, session_id)}
+
+    @app.post("/api/copilot/actions/{action_id}")
+    def copilot_action(action_id: str, request: CopilotActionRequest) -> dict[str, Any]:
+        if not tools.get_conversation(request.session_id):
+            raise HTTPException(status_code=404, detail="session not found")
+        try:
+            result = execute_action(tools, action_id, request.session_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        return {**result, "message": format_action_result(result), "tools_used": [result.get("tool_name")]}
+
+    @app.post("/api/copilot/chat")
+    def copilot_chat(request: CopilotChatRequest) -> dict[str, Any]:
+        if not tools.get_conversation(request.session_id):
+            raise HTTPException(status_code=404, detail="session not found")
+        text = request.message.strip()
+        if not text:
+            raise HTTPException(status_code=400, detail="message is required")
+        actions = recommend_actions(tools, request.session_id)
+        selected = next((item for item in actions if any(term in text for term in ("物流", "快递", "收到", "发货")) and item["action_id"] == "check_logistics"), None)
+        selected = selected or next((item for item in actions if any(term in text for term in ("退款", "到账", "打款")) and item["action_id"] in {"check_refund", "check_payment"}), None)
+        selected = selected or (actions[0] if actions else None)
+        if not selected:
+            return {"session_id": request.session_id, "message": "当前没有可执行的业务查询，请提供更具体的问题。", "tools_used": [], "evidence": []}
+        result = execute_action(tools, selected["action_id"], request.session_id)
+        return {"session_id": request.session_id, "message": format_action_result(result), "tools_used": [result.get("tool_name")], "evidence": [{"source": result.get("source"), "status": result.get("status"), "action_id": result.get("action_id")}]}
+
+    @app.post("/api/copilot/feedback")
+    def copilot_feedback(request: CopilotFeedbackRequest) -> dict[str, Any]:
+        """原则 3 人机协同工具化：人工修改建议回复落库为结构化事件，补全审计链。"""
+        if not tools.get_conversation(request.conversation_id):
+            raise HTTPException(status_code=404, detail="session not found")
+        try:
+            feedback_id = record_feedback(DB_PATH, request.conversation_id, request.original_reply, request.edited_reply)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        return {"feedback_id": feedback_id, "conversation_id": request.conversation_id, "recorded": True}
 
     @app.get("/api/risks")
     def risks(level: str | None = None, status: str | None = None) -> dict[str, Any]:
@@ -168,6 +267,20 @@ def create_app():
         with sqlite3.connect(DB_PATH) as conn:
             row = conn.execute("SELECT COUNT(*), COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0), COALESCE(AVG(latency_ms),0) FROM agent_runs").fetchone()
         return {"runs": row[0], "input_tokens": row[1], "output_tokens": row[2], "avg_latency_ms": row[3]}
+
+    # 生产/演示形态：后端直接托管已构建的前端（frontend/dist），单进程即可访问 /workbench。
+    # 必须在所有 API 路由之后注册；dist 不存在时（如纯后端测试）自动跳过。
+    if FRONTEND_DIST.is_dir():
+        dist_root = FRONTEND_DIST.resolve()
+
+        @app.get("/{full_path:path}", include_in_schema=False)
+        def spa_entry(full_path: str):
+            if full_path.startswith("api/"):
+                raise HTTPException(status_code=404, detail="not found")
+            candidate = (dist_root / full_path).resolve()
+            if full_path and candidate.is_relative_to(dist_root) and candidate.is_file():
+                return FileResponse(candidate)
+            return FileResponse(dist_root / "index.html")
 
     return app
 

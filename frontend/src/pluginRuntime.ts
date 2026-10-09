@@ -1,7 +1,13 @@
 export type HostEventName = 'SESSION_CHANGED' | 'MESSAGE_RECEIVED' | 'AGENT_ANALYSIS_STARTED' | 'AGENT_ANALYSIS_COMPLETED' | 'RISK_EVENT_CREATED'
 export type PluginMessage = Record<string, string>
 export type PluginContext = { sessionId: string; customer: string; currentMessages: PluginMessage[]; currentOrder?: Record<string, string>; currentProduct?: Record<string, string> }
-export type PluginActions = { insertSuggestedReply(text: string): void; requestHumanTakeover(): void; openRiskDetail(riskId?: string): void }
+export type PluginActions = {
+  insertSuggestedReply(text: string): void
+  requestHumanTakeover(): void
+  openRiskDetail(riskId?: string): void
+  executeQuickAction(actionId: string, sessionId: string): Promise<{ message: string; source?: string }>
+  askAgent(message: string, sessionId: string): Promise<{ message: string; source?: string }>
+}
 export type QianniuHostAdapter = { getPluginContext(): PluginContext | null; emit(event: HostEventName): void; onEvent(listener: (event: HostEventName) => void): () => void }
 export class SimulatedQianniuAdapter implements QianniuHostAdapter {
   private context: PluginContext | null = null
@@ -41,4 +47,4 @@ export const RISK_CATEGORY_LABELS: Record<string, string> = {
 }
 export const riskLevelLabel = (level: string) => RISK_LEVEL_LABELS[level] || level
 export const riskStatusLabel = (status: string) => RISK_STATUS_LABELS[status] || status
-export const riskCategoryLabel = (category: string) => RISK_CATEGORY_LABELS[category] || category
+export const riskCategoryLabel = (category: string) => RISK_CATEGORY_LABELS[(category || '').toLowerCase()] || category

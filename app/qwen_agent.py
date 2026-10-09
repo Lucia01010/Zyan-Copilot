@@ -13,9 +13,33 @@ from typing import Any, Callable, Literal
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from app.business_tools import BusinessTools
+from app.config import load_env
+from app.context_arbiter import arbitrate_messages, arbitrate_orders
+from app.error_compactor import compact_tool_error
 from app.hybrid_risk import hybrid_risk
 from app.intent_taxonomy import IntentTaxonomy
 from app.risk_engine import assess_context
+from app.task_state import record_task, update_task
+
+load_env()  # 配置外置化：导入即加载仓库根目录 .env（已存在的真实环境变量优先，不被覆盖）
+
+PROMPTS_DIR = Path(__file__).resolve().parent / "prompts"
+_PROMPT_CACHE: dict[str, str] = {}
+
+
+def load_prompt(name: str, **values: str) -> str:
+    """读取 app/prompts/<name>.txt 提示词模板并替换 {placeholder}；首次读取后缓存。
+
+    提示词外置化（12-Factor 原则 4）：模板独立于代码版本管理与回滚，修改提示词无需改代码。
+    """
+    template = _PROMPT_CACHE.get(name)
+    if template is None:
+        template = (PROMPTS_DIR / f"{name}.txt").read_text(encoding="utf-8")
+        _PROMPT_CACHE[name] = template
+    for key, value in values.items():
+        template = template.replace("{" + key + "}", value)
+    return template
+
 
 TOOL_SCHEMAS = [
     {"type": "function", "function": {"name": "get_conversation", "description": "查询指定会话的有限条消息。只能用于已有 conversation_id。", "parameters": {"type": "object", "properties": {"conversation_id": {"type": "string"}, "limit": {"type": "integer", "maximum": 50}}, "required": ["conversation_id"]}}},
@@ -69,6 +93,7 @@ class AgentResult:
     repair_used: bool = False
     hybrid_risk: dict[str, Any] | None = None
     workflow: dict[str, Any] | None = None
+    task_id: str | None = None
 
 
 class QwenProvider:
@@ -208,7 +233,7 @@ class QwenProvider:
             return suggestion, "mock", len(json.dumps(request_context, ensure_ascii=False)), 28, [], True, output, [], [], "stop", json.dumps(output, ensure_ascii=False), False
 
         schema_contract = json.dumps(self._api_schema(), ensure_ascii=False, separators=(",", ":"))
-        system = "你是美妆客服辅助 Agent。阶段 A 只负责使用现有业务 tools 查询事实，不输出最终客服答案。只引用 tool 返回的订单号、工单号、商品、时间和历史承诺。"
+        system = load_prompt("stage_a_tools")
         messages: list[dict[str, Any]] = [{"role": "system", "content": system}, {"role": "user", "content": json.dumps({"request": request_context, "baseline_risk": baseline_risk}, ensure_ascii=False)}]
         called: list[str] = []
         errors: list[str] = []
@@ -233,18 +258,21 @@ class QwenProvider:
                     if name not in executor:
                         errors.append(f"unknown_tool:{name}")
                         continue
+                    args: dict[str, Any] = {}
                     try:
                         args = json.loads(call.get("function", {}).get("arguments", "{}"))
                         result = executor[name](**args)
                         called.append(name)
                         messages.append({"role": "tool", "tool_call_id": call.get("id", uuid.uuid4().hex), "name": name, "content": json.dumps(result, ensure_ascii=False, default=str)[:self.tool_result_char_limit]})
                     except Exception as exc:
+                        # 原则 6 错误压缩：回注紧凑可自纠的错误 JSON，而非无信息量的占位符
                         errors.append(f"tool_error:{name}:{type(exc).__name__}")
-                        messages.append({"role": "tool", "tool_call_id": call.get("id", uuid.uuid4().hex), "name": name, "content": json.dumps({"error": "tool failed", "type": type(exc).__name__})})
+                        compact = compact_tool_error(name, exc)
+                        messages.append({"role": "tool", "tool_call_id": call.get("id", uuid.uuid4().hex), "name": name, "content": json.dumps(compact, ensure_ascii=False)})
                 continue
             break
         evidence_messages = [m for m in messages if m.get("role") in {"tool", "user"}]
-        synthesis_system = f"你是美妆客服辅助 Agent 的最终合成阶段。只能根据已检索工具证据和必要上下文输出。禁止调用工具、推理过程、重复事实或新增事实。suggested_reply 必须是第一人称客服语气、礼貌、简洁、可直接发送；必须使用当前消息、历史对话、订单/物流/退款/工单证据和风险动作，找不到事实时明确说会进一步核实，不得编造或做无法保证的承诺。Produce concise structured output. Evidence 只保留最多 6 条决策关键事实，每条简短且保留 source_id，不复制完整 tool response；summary 最多 180 字且不要重复 evidence；recommended_actions 最多 5 条短句；suggested_reply 控制在 150-300 字；tools_used 只写工具名称；missing_information 只写影响决策的缺失信息。最终回答严格符合 schema：{schema_contract}。只输出 JSON object，不要 markdown、fence 或前后解释。"
+        synthesis_system = load_prompt("final_synthesis", schema_contract=schema_contract)
         synthesis_messages = [{"role": "system", "content": synthesis_system}, {"role": "user", "content": json.dumps({"request": request_context, "baseline_risk": baseline_risk, "retrieved_evidence": evidence_messages, "tools_used": called}, ensure_ascii=False)}]
         final_format = {"type": "json_schema", "json_schema": {"name": "agent_output", "schema": self._api_schema(), "strict": True}}
         final_body = self._request(synthesis_messages, [], response_format=final_format, stage="final_synthesis")
@@ -264,7 +292,7 @@ class QwenProvider:
         if repair_eligible:
             repair_used = True
             errors.append("json_schema_fallback_repair")
-            repair_system = f"Convert the existing final content into exactly one valid JSON object matching this schema: {schema_contract}. Preserve only facts already present; do not infer, call tools, add facts, or explain. Output JSON only."
+            repair_system = load_prompt("json_repair", schema_contract=schema_contract)
             repair_messages = [{"role": "system", "content": repair_system}, {"role": "user", "content": raw_final_content[: self.tool_result_char_limit]}]
             repair_body = self._request(repair_messages, [], response_format=final_format, stage="repair")
             repair_usage = repair_body.get("usage", {})
@@ -375,7 +403,20 @@ class BeautyAgent:
         }
 
     def suggest(self, *, conversation_id: str | None = None, order_number: str | None = None, buyer_nickname: str | None = None) -> AgentResult:
+        """原则 7：任务级全局状态全程落库（started → context_ready → synthesis_done → completed/failed）。"""
         started = time.perf_counter()
+        task_id = str(uuid.uuid4())
+        record_task(self.db_path, task_id, conversation_id, order_number, "started", {"buyer_nickname": buyer_nickname})
+        try:
+            result = self._suggest_inner(started, task_id, conversation_id=conversation_id, order_number=order_number, buyer_nickname=buyer_nickname)
+            update_task(self.db_path, task_id, "completed", {"suggestion_chars": len(result.suggestion), "structured_output_valid": result.structured_output_valid}, run_id=result.run_id)
+            result.task_id = task_id
+            return result
+        except Exception as exc:
+            update_task(self.db_path, task_id, "failed", error=str(exc)[:300])
+            raise
+
+    def _suggest_inner(self, started: float, task_id: str, *, conversation_id: str | None = None, order_number: str | None = None, buyer_nickname: str | None = None) -> AgentResult:
         context: dict[str, Any] = {"messages": [], "orders": [], "work_orders": []}
         calls: list[str] = []
         if buyer_nickname:
@@ -409,7 +450,11 @@ class BeautyAgent:
             raise ValueError("conversation_id, order_number or buyer_nickname is required")
         risk = assess_context(context)
         compact = self.tools._project("customer_context", context)
-        request_context = {"conversation_id": conversation_id, "order_number": order_number, "buyer_nickname": buyer_nickname, "message_count": len(context.get("messages", [])), "order_count": len(context.get("orders", [])), "work_order_count": len(context.get("work_orders", [])), "recent_messages": compact.get("messages", [])[-6:], "orders": compact.get("orders", [])[:3], "work_orders": compact.get("work_orders", [])[:6]}
+        # 原则 5 上下文仲裁：按重要性分级进入 LLM 窗口，替代 FIFO 截断
+        recent_messages, arbitration = arbitrate_messages(compact.get("messages", []), max_messages=6)
+        orders, order_arbitration = arbitrate_orders(compact.get("orders", []), order_number, recent_messages, max_orders=3)
+        request_context = {"conversation_id": conversation_id, "order_number": order_number, "buyer_nickname": buyer_nickname, "message_count": len(context.get("messages", [])), "order_count": len(context.get("orders", [])), "work_order_count": len(context.get("work_orders", [])), "recent_messages": recent_messages, "orders": orders, "work_orders": compact.get("work_orders", [])[:6], "context_arbitration": {"messages": arbitration, "orders": order_arbitration}}
+        update_task(self.db_path, task_id, "context_ready", {"message_count": request_context["message_count"], "order_count": request_context["order_count"], "work_order_count": request_context["work_order_count"], "risk_level": risk.get("level"), "arbitration": request_context["context_arbitration"]})
         executor = self.tools.list_tools(compact=True)
         suggestion, provider_name, input_tokens, output_tokens, model_calls, valid, model_output, errors, usage_records, finish_reason, raw_final_content, repair_used = self.provider.run(request_context, risk, executor)
         calls.extend(model_calls)
@@ -420,6 +465,7 @@ class BeautyAgent:
             conn.execute("CREATE TABLE IF NOT EXISTS agent_runs (run_id TEXT PRIMARY KEY, provider TEXT, model TEXT, input_tokens INTEGER, output_tokens INTEGER, latency_ms INTEGER, tool_calls_json TEXT, risk_level TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)")
             conn.execute("INSERT INTO agent_runs VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)", (run_id, provider_name, self.provider.model, input_tokens, output_tokens, latency_ms, json.dumps(calls, ensure_ascii=False), risk["level"]))
             conn.commit()
+        update_task(self.db_path, task_id, "synthesis_done", {"provider": provider_name, "input_tokens": input_tokens, "output_tokens": output_tokens, "latency_ms": latency_ms, "tool_calls": calls, "structured_output_valid": valid})
         model_risk = (model_output or {}).get("risk_level")
         if model_output is not None:
             model_output.setdefault("tools_used", list(dict.fromkeys(calls)))

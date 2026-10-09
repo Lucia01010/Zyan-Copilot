@@ -155,3 +155,16 @@ class QwenAgentTests(unittest.TestCase):
         self.assertFalse(payload["stream"])
         self.assertNotIn("test-only", json.dumps(payload))
 
+    def test_prompts_are_externalized_and_placeholder_replaced(self):
+        from app.qwen_agent import PROMPTS_DIR, load_prompt
+
+        for name in ("stage_a_tools", "final_synthesis", "json_repair"):
+            path = PROMPTS_DIR / f"{name}.txt"
+            self.assertTrue(path.is_file(), f"missing prompt template: {path}")
+            template = load_prompt(name, schema_contract='{"test": true}')
+            self.assertTrue(template.strip(), f"empty prompt template: {name}")
+            self.assertNotIn("{schema_contract}", template, f"placeholder not replaced: {name}")
+        stage_a = load_prompt("stage_a_tools")
+        self.assertIn("美妆客服辅助 Agent", stage_a)
+        self.assertIn("阶段 A", stage_a)
+

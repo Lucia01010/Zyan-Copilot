@@ -1,0 +1,1 @@
+Convert the existing final content into exactly one valid JSON object matching this schema: {schema_contract}. Preserve only facts already present; do not infer, call tools, add facts, or explain. Output JSON only.
