@@ -101,7 +101,7 @@ class BusinessTools:
 
     @staticmethod
     def _action_result(action_id: str, source: str, data: Any, *, found: bool = True, message: str | None = None) -> dict[str, Any]:
-        return {"action_id": action_id, "status": "OK" if found else "NOT_FOUND", "source": source, "data": data if found else {}, "message": message or ("已从比赛实例数据查询到相关记录。" if found else "当前比赛实例数据未找到相关记录。")}
+        return {"action_id": action_id, "status": "OK" if found else "NOT_FOUND", "source": source, "data": data if found else {}, "message": message or ("已从比赛实例数据查询到相关记录。" if found else "未找到相关业务记录。")}
 
     def get_order_info(self, session_id: str) -> dict[str, Any]:
         context, _ = self._session_context(session_id)
@@ -148,6 +148,31 @@ class BusinessTools:
         messages = self.get_conversation(session_id)
         return self._action_result("check_service_history", "chat_messages", self._project("conversation", messages[-12:]), found=bool(messages))
 
+    def summarize_customer_history(self, session_id: str) -> dict[str, Any]:
+        """聚合当前客户的全域历史：跨会话消息、工单、服务承诺，供规则化总结消费。"""
+        messages = self.get_conversation(session_id)
+        if not messages:
+            return self._action_result("summarize_customer_history", "chat_messages", [], found=False)
+        buyer = messages[0].get("buyer_nickname")
+        context = self.get_customer_context(str(buyer), limit=200) if buyer else {"orders": [], "work_orders": [], "messages": messages}
+        all_messages = context.get("messages", [])
+        work_orders = context.get("work_orders", [])
+        orders = context.get("orders", [])
+        promise_terms = ("承诺", "回访", "补发", "到账", "24小时", "明天", "保证", "一定", "尽快")
+        promises = [m for m in all_messages if any(t in str(m.get("message_text") or "") for t in promise_terms)]
+        sessions = sorted(set(str(m.get("conversation_id") or "") for m in all_messages if m.get("conversation_id")))
+        data = {
+            "buyer_nickname": buyer,
+            "session_count": len(sessions),
+            "message_count": len(all_messages),
+            "sessions": sessions,
+            "messages": self._project("conversation", all_messages),
+            "work_orders": self._project("work_orders", work_orders),
+            "orders": self._project("orders", orders),
+            "promises": self._project("conversation", promises[-6:]),
+        }
+        return self._action_result("summarize_customer_history", "customer_context", data, found=bool(all_messages))
+
     def get_service_promises(self, session_id: str) -> dict[str, Any]:
         messages = self.get_conversation(session_id)
         terms = ("承诺", "回访", "补发", "到账", "24小时", "明天")
@@ -168,6 +193,7 @@ class BusinessTools:
                 "get_return_status": self.get_return_status, "get_replacement_status": self.get_replacement_status,
                 "get_ticket_status": self.get_ticket_status, "get_adverse_reaction_record": self.get_adverse_reaction_record,
                 "get_service_history": self.get_service_history, "get_service_promises": self.get_service_promises,
+                "summarize_customer_history": self.summarize_customer_history,
             })
         if not compact:
             return tools

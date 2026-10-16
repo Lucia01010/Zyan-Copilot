@@ -1,7 +1,7 @@
 import unittest
 from pathlib import Path
 
-from app.action_registry import ACTION_DEFINITIONS, execute_action, format_action_result, recommend_actions
+from app.action_registry import ACTION_DEFINITIONS, CAPABILITY_RESPONSE, classify_copilot_intent, execute_action, format_action_result, handle_copilot_chat, recommend_actions
 from app.business_tools import BusinessTools
 
 
@@ -57,6 +57,71 @@ class ActionRegistryTests(unittest.TestCase):
     def test_error_payload_gets_honest_user_message(self):
         failing = {"status": "ERROR", "data": {}, "error": {"error_type": "RuntimeError"}, "action_id": "check_order", "tool_name": "get_order_context", "session_id": "S00082"}
         self.assertEqual(format_action_result(failing), "业务查询服务暂时异常，我会记录问题并尽快核实后给您答复。")
+
+    def test_history_summary_contains_required_sections(self):
+        """summarize_customer_history 必须返回沟通次数/核心问题/时间线/承诺/建议，禁止只返回条数。"""
+        result = execute_action(self.tools, "summarize_customer_history", "S00082")
+        summary = format_action_result(result)
+        self.assertIn("历史服务摘要", summary)
+        self.assertIn("核心问题", summary)
+        self.assertIn("时间线摘要", summary)
+        self.assertIn("历史承诺", summary)
+        self.assertIn("当前建议", summary)
+        self.assertNotIn("已查到", summary)
+        # 必须能回答：客户之前遇到了什么问题（核心问题段）
+        self.assertTrue(any(kw in summary for kw in ("过敏", "物流", "退款", "退货", "常规", "工单", "赠品", "投诉")))
+
+    def test_history_summary_empty_session_returns_honest_message(self):
+        """无历史记录时返回'暂无历史服务记录'，禁止'未找到相关记录，我会进一步核实'。"""
+        result = execute_action(self.tools, "summarize_customer_history", "SESSION_NOT_EXIST")
+        summary = format_action_result(result)
+        self.assertEqual(summary, "暂无历史服务记录。")
+        self.assertNotIn("未找到", summary)
+        self.assertNotIn("核实", summary)
+
+
+class CopilotChatRoutingTests(unittest.TestCase):
+    """原则 5 意图先行：能力咨询/未知意图禁止调用 business tool，业务查询才允许。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tools = BusinessTools(Path(__file__).resolve().parents[1] / "data/beauty_cs_agent.sqlite3")
+
+    def test_classification_rules(self):
+        self.assertEqual(classify_copilot_intent("你能做什么"), "capability_question")
+        self.assertEqual(classify_copilot_intent("你有什么功能"), "capability_question")
+        self.assertEqual(classify_copilot_intent("介绍一下自己"), "capability_question")
+        self.assertEqual(classify_copilot_intent("你可以帮助我什么"), "capability_question")
+        self.assertEqual(classify_copilot_intent("帮我查一下物流"), "business_query")
+        self.assertEqual(classify_copilot_intent("为什么这个客户风险这么高"), "risk_query")
+        self.assertEqual(classify_copilot_intent("今天天气怎么样"), "unknown")
+        self.assertEqual(classify_copilot_intent("   "), "unknown")
+
+    def test_case1_capability_question_returns_intro_without_tools(self):
+        response = handle_copilot_chat(self.tools, "S00082", "你能做什么")
+        self.assertEqual(response["intent"], "capability_question")
+        self.assertEqual(response["message"], CAPABILITY_RESPONSE)
+        self.assertEqual(response["tools_used"], [])
+        self.assertNotIn("未找到相关", response["message"])
+
+    def test_case2_logistics_question_calls_logistics_tool(self):
+        response = handle_copilot_chat(self.tools, "S00082", "帮我查一下物流")
+        self.assertEqual(response["intent"], "business_query")
+        self.assertEqual(response["tools_used"], ["get_logistics_info"])
+        self.assertTrue(response["message"])
+
+    def test_case3_risk_question_uses_customer_context(self):
+        response = handle_copilot_chat(self.tools, "S00082", "为什么这个客户风险这么高")
+        self.assertEqual(response["intent"], "risk_query")
+        self.assertIn("get_customer_context", response["tools_used"])
+        self.assertTrue(response["message"])
+
+    def test_unknown_intent_gets_honest_reply_without_tool(self):
+        response = handle_copilot_chat(self.tools, "S00082", "今天天气怎么样")
+        self.assertEqual(response["intent"], "unknown")
+        self.assertEqual(response["tools_used"], [])
+        self.assertNotIn("未找到相关", response["message"])
+        self.assertIn("暂时无法直接回答", response["message"])
 
 
 if __name__ == "__main__":

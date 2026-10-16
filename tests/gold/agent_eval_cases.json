@@ -1,0 +1,21 @@
+{
+  "version": "M21-1",
+  "tool_cases": [
+    {"id": "tool-1", "session_id": "S00082", "message": "物流到哪了", "expected_tools": ["get_logistics_info"], "forbidden_tools": ["search_knowledge"]},
+    {"id": "tool-2", "session_id": "S00082", "message": "退款什么时候到账", "expected_tools": ["get_refund_status"], "forbidden_tools": ["search_knowledge"]},
+    {"id": "tool-3", "session_id": "S00082", "message": "我的快递在哪里", "expected_tools": ["get_logistics_info"], "forbidden_tools": ["search_knowledge"]},
+    {"id": "tool-4", "session_id": "S00082", "message": "修护精华液怎么使用", "expected_tools": ["search_knowledge"], "forbidden_tools": ["get_logistics_info", "get_refund_status"]},
+    {"id": "tool-5", "session_id": "S00082", "message": "你能做什么", "expected_tools": [], "forbidden_tools": ["search_knowledge", "get_logistics_info", "get_refund_status"]},
+    {"id": "tool-6", "session_id": "S00082", "message": "我要投诉", "expected_tools": ["summarize_customer_history", "get_customer_context"], "forbidden_tools": []},
+    {"id": "tool-7", "session_id": "S00082", "message": "这个用了脸疼怎么办", "expected_tools": ["get_adverse_reaction_record"], "forbidden_tools": ["search_knowledge"]}
+  ],
+  "retrieval_cases": [
+    {"id": "rag-1", "query": "保质期多久", "expected_doc": "产品知识", "expected_section_contains": "保质期"},
+    {"id": "rag-2", "query": "退货需要满足什么条件", "expected_doc": "售后规则", "expected_section_contains": "七天无理由"},
+    {"id": "rag-3", "query": "这个用了脸疼怎么办", "expected_doc": "售后规则", "expected_section_contains": "不良反应"},
+    {"id": "rag-4", "query": "客服响应时效有什么规定", "expected_doc": "客服服务规范", "expected_section_contains": "响应"}
+  ],
+  "memory_cases": [
+    {"id": "mem-1", "session_id": "S00082", "turns": ["这个客户又来投诉了", "这个客户还在投诉"], "assertion": "second_turn_plan_dedup"}
+  ]
+}

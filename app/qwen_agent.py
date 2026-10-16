@@ -15,6 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from app.business_tools import BusinessTools
 from app.config import load_env
 from app.context_arbiter import arbitrate_messages, arbitrate_orders
+from app.context_engine import ContextEngine
 from app.error_compactor import compact_tool_error
 from app.hybrid_risk import hybrid_risk
 from app.intent_taxonomy import IntentTaxonomy
@@ -352,6 +353,7 @@ class BeautyAgent:
     def __init__(self, db_path: Path, provider: QwenProvider | None = None):
         self.db_path = db_path
         self.tools = BusinessTools(db_path)
+        self.context_engine = ContextEngine(db_path)
         self.provider = provider or QwenProvider()
 
     @staticmethod
@@ -419,41 +421,43 @@ class BeautyAgent:
     def _suggest_inner(self, started: float, task_id: str, *, conversation_id: str | None = None, order_number: str | None = None, buyer_nickname: str | None = None) -> AgentResult:
         context: dict[str, Any] = {"messages": [], "orders": [], "work_orders": []}
         calls: list[str] = []
-        if buyer_nickname:
-            context = self.tools.get_customer_context(buyer_nickname)
-            calls.append("get_customer_context")
-        elif conversation_id or order_number:
-            if conversation_id:
-                conversation_messages = self.tools.get_conversation(conversation_id)
-                context["messages"] = conversation_messages
-                calls.append("get_conversation")
-                # A real session is the entry point, but reply generation also needs
-                # the linked customer/order/ticket evidence. Keep the session messages
-                # as the primary conversation while projecting related records.
-                buyer = conversation_messages[0].get("buyer_nickname") if conversation_messages else None
-                if buyer:
-                    customer_context = self.tools.get_customer_context(str(buyer))
-                    context["orders"] = customer_context.get("orders", [])
-                    context["work_orders"] = customer_context.get("work_orders", [])
-                    calls.append("get_customer_context")
-                linked_work_orders = self.tools.get_work_orders(conversation_id)
-                if linked_work_orders:
-                    context["work_orders"] = linked_work_orders
-                calls.append("get_work_orders")
-            if order_number:
-                order = self.tools.get_order(order_number)
-                if order:
-                    context["orders"] = [order]
-                context["work_orders"] = self.tools.get_work_orders(conversation_id, order_number)
-                calls.extend(["get_order", "get_work_orders"])
-        else:
+        agent_context = None
+        if not (conversation_id or order_number or buyer_nickname):
             raise ValueError("conversation_id, order_number or buyer_nickname is required")
-        risk = assess_context(context)
+        # M12 Context Engine：任一入口自动推导完整业务上下文，按买家严格隔离
+        if conversation_id:
+            agent_context = self.context_engine.build(conversation_id=conversation_id)
+            context = agent_context.raw_context
+            calls.extend(["get_conversation", "get_customer_context", "get_work_orders"])
+        elif buyer_nickname:
+            agent_context = self.context_engine.build(buyer_nickname=buyer_nickname)
+            context = agent_context.raw_context
+            calls.append("get_customer_context")
+        elif order_number:
+            agent_context = self.context_engine.build(order_number=order_number)
+            context = agent_context.raw_context
+            calls.extend(["get_order", "get_work_orders"])
+        if order_number and conversation_id:
+            # 组合入口：会话上下文之上收敛到指定订单（与既有行为一致）
+            order = self.tools.get_order(order_number)
+            if order:
+                context["orders"] = [order]
+            context["work_orders"] = self.tools.get_work_orders(conversation_id, order_number)
+            calls.extend(["get_order", "get_work_orders"])
+        risk = assess_context(context) if (order_number and conversation_id) else (agent_context.risk or assess_context(context))
         compact = self.tools._project("customer_context", context)
         # 原则 5 上下文仲裁：按重要性分级进入 LLM 窗口，替代 FIFO 截断
         recent_messages, arbitration = arbitrate_messages(compact.get("messages", []), max_messages=6)
         orders, order_arbitration = arbitrate_orders(compact.get("orders", []), order_number, recent_messages, max_orders=3)
         request_context = {"conversation_id": conversation_id, "order_number": order_number, "buyer_nickname": buyer_nickname, "message_count": len(context.get("messages", [])), "order_count": len(context.get("orders", [])), "work_order_count": len(context.get("work_orders", [])), "recent_messages": recent_messages, "orders": orders, "work_orders": compact.get("work_orders", [])[:6], "context_arbitration": {"messages": arbitration, "orders": order_arbitration}}
+        if agent_context is not None:
+            # M12：统一上下文随请求下发（客户/会话/服务历史/风险/可用工具），模型不再缺业务背景
+            engine_payload = agent_context.as_dict()
+            request_context["customer"] = engine_payload.get("customer", {})
+            request_context["session"] = engine_payload.get("session", {})
+            request_context["service_history"] = engine_payload.get("service_history", {})
+            request_context["risk_context"] = engine_payload.get("risk", {})
+            request_context["available_tools"] = engine_payload.get("available_tools", [])
         update_task(self.db_path, task_id, "context_ready", {"message_count": request_context["message_count"], "order_count": request_context["order_count"], "work_order_count": request_context["work_order_count"], "risk_level": risk.get("level"), "arbitration": request_context["context_arbitration"]})
         executor = self.tools.list_tools(compact=True)
         suggestion, provider_name, input_tokens, output_tokens, model_calls, valid, model_output, errors, usage_records, finish_reason, raw_final_content, repair_used = self.provider.run(request_context, risk, executor)

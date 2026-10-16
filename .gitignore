@@ -48,3 +48,11 @@ temp/
 artifacts/
 data/generated/live_debug/
 data/generated/evaluation/
+
+# Local data collection outputs and scratch files
+output/
+_scratch_*
+
+# External reference materials and local documents
+/docs/*.pdf
+/*.docx

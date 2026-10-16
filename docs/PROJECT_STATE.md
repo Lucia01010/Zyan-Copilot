@@ -386,6 +386,134 @@ M5 PASS（MANUAL_BROWSER_ACCEPTANCE）；M6 PASS；M7 PARTIAL — live Agent pip
 - 远端：force push 覆盖 `origin/master`（d923243 → 8af1484），GitHub 上的旧历史已被替换。提交信息、作者、日期保留，工作区 33 项改动不变。
 - 建议：尽管历史已清除，GitHub 可能缓存旧提交视图（fork/PR 引用不可控），**仍建议到阿里云控制台轮换该 Key**；新 Key 只放 `.env`。Temp 中的重写前备份 bundle 含旧 Key，确认无误后应删除。
 
+### Copilot Chat 意图路由修复（2026-10-10）
+
+- 问题：Agent Chat 对"你能做什么"等能力咨询误入业务兜底（执行 actions[0]）并返回"未找到相关记录"，且消息重复出现两次。
+- 修复：意图分类新增 capability_question/risk_query/unknown；路由改为"先分类再路由"，仅 business_query 允许调用 business tool；能力咨询返回固定介绍（CAPABILITY_RESPONSE，多行经 white-space:pre-line 渲染）；删除 actions[0] 盲兜底，未知意图诚实回复 UNKNOWN_REPLY，"未找到相关业务记录"仅在真实业务查询无结果时出现（format_action_result NOT_FOUND 分支）。
+- 防重：前端 sendingRef 同步锁 + request_id（crypto.randomUUID）随请求发送；后端 copilot_request_cache 幂等缓存（先查后路由，上限 256 条 LRU 淘汰）。
+- 分类与路由逻辑位于 app/action_registry.py（classify_copilot_intent / handle_copilot_chat / BUSINESS_ROUTES 关键词→动作映射），api.py 端点为薄委托；业务查询按关键词直达动作（过敏→check_adverse_reaction、物流→check_logistics、退款→check_refund 等 8 条），不再依赖 recommend_actions 排序。
+- 验证：75/75 测试通过（新增 CopilotChatRoutingTests：Case1 能力介绍零工具调用 / Case2 物流问题调用 get_logistics_info / Case3 风险问题调用 get_customer_context / 未知意图诚实回复）；HTTP 冒烟四用例 intent 与 tools_used 符合预期，同 request_id 二次请求返回缓存响应；前端 typecheck + build 通过（bundle index-C0lqSEmm.js），服务已重启。
+- 已知限制：意图分类为规则词表（BUSINESS_ROUTES/CAPABILITY_TERMS/RISK_TERMS），覆盖演示场景；接 qwen live 后可由 LLM 分类替换，词表保留为兜底。测试注意：PowerShell Invoke-RestMethod 发中文 body 必须 UTF-8 字节，否则服务端收乱码全部判 unknown。
+
 ### 结论
 
 G1–G5（含 G5b 人机协同）已完成，剩余 G6–G8 优先级均为低（演示阶段不动）；若后续迭代，建议顺序 G7。
+
+## M17.1 知妍·洞察 Dashboard 视觉优化（2026-10-11）
+
+- 风险事件 API 增加只读 `risk_id`、`risk_type` 和 `observed_at` 字段；`observed_at` 取关联客户最新客服聊天 `sent_at`，用于趋势统计并明确标注为关联服务记录时间。
+- 看板增加紧凑两列图表卡：风险等级分布、主要风险来源、风险处理进度、重点风险客户 Top 5；趋势图占满一行并按最近 14 个有记录日期绘制。
+- 图表与列表联动筛选、清除筛选和风险详情链路保持不变；无时间序列或无风险事件时显示业务空态。
+- 文档：`docs/ZHIYAN_INSIGHT_DASHBOARD.md`。
+- 待验证：frontend typecheck、production build、backend tests、浏览器图表联动 smoke。
+
+### M17.1 验证结果（2026-10-11）
+
+- `python -m unittest discover -s tests -q`：77/77 PASS。
+- `npm run typecheck`：PASS；`npm run build`：PASS。
+- 风险趋势已使用 `/api/risks` 的 `observed_at`：取关联客户最新聊天 `sent_at`，按最近 14 个有记录日期绘制；页面文案说明这是风险识别/关联服务记录时间。
+- 图表布局改为紧凑两列卡片，趋势图占满一行；环形图图例固定紧凑宽度，避免大面积横向空白。
+- 浏览器自动化尝试访问本地 Vite 地址时出现 `ERR_CONNECTION_TIMED_OUT`，因此本轮未将浏览器 click-through 记为通过；需在可访问本地服务的浏览器环境复验筛选、清除筛选和详情打开。
+
+## M12 Context Engine（2026-10-13）
+
+- 目标：知妍从单轮问答升级为理解当前客服环境的 Agent——模型在回答"这个客户为什么投诉？"时能知道客户是谁、买了什么、历史发生了什么、当前订单状态、可调用什么工具。
+- 数据扫描文档：`docs/DATA_CONTEXT_MAP.md`，逐表列出客户维度（无独立 customers 表，buyer_nickname 承载）、chat_messages（998 行 17 字段）、orders（113 行）、五类工单表（公共字段 + 特有字段 + 行数）、风险派生实体与运行态辅助表，并明确隔离与防串线约束。
+- 新增 `app/context_engine.py`：
+  - 统一 `AgentContext` 六段：customer / session / order / service_history / risk / available_tools；`raw_context`（repr=False，不序列化）供风险引擎与 workflow 内部使用未修剪数据。
+  - 三入口构建 `ContextEngine.build(session_id/conversation_id/buyer_nickname/order_number)`：会话入口从首条消息锚定 buyer → `get_customer_context(buyer, limit=200)` → 关联会话工单优先（与既有 suggest 行为一致）→ 只读调用 `assess_context`。
+  - 防串线：一切聚合以 buyer_nickname 为锚；白名单字段投影（`_prune_messages` 限 8 条、`_prune_orders` 限 3 条、`_prune_work_orders` 限 6 条），`_compact` 递归剔除 None/空串/空列表，杜绝不存在字段与虚假业务事实进入 payload。
+  - `_PROMISE_TERMS` 关键词提取历史承诺消息；`available_tool_names()` 返回 14 个工具名。
+- `app/qwen_agent.py` 接入：`BeautyAgent.__init__` 持有 `ContextEngine`；`_suggest_inner` 上下文装配段重写——任一入口（conversation_id / buyer_nickname / order_number）自动推导完整业务上下文，不要求前端手动传大量信息；request_context 保留全部旧键（mock provider 依赖 recent_messages/orders/work_orders），追加 customer/session/service_history/risk_context/available_tools 五段。
+- 新增 `tests/test_context_engine.py` 12 例：`_compact` 空值剔除；S00082 构建六段齐全、未知会话安全降级、payload 无 None/空串、字段白名单校验；客户 A/B 隔离（S00082=方b** vs S00002=冯h**——买家不同、消息/订单/工单不串买家、订单号集合无交集、锚定会话不在 other_sessions、risk level 各自独立）。
+- 验证：`python -m unittest discover -s tests -q` 89/89 PASS；重启 9000 端口服务（mock）冒烟：/health ok，POST /api/workbench/suggest（S00082）返回 risk_level=critical、tool_calls=[get_conversation, get_customer_context, get_work_orders]，S00002 对照返回不同建议（上下文隔离生效）。
+- 未改动：UI、Risk 算法、Qwen provider。
+- 已知限制：mock 模式下 request_context 不直接暴露在 HTTP 响应中（内部对象，经 workflow trace 可观测）；字段白名单为手工维护，schema 变更时需同步。
+
+## M14 Planner & Action Router（2026-10-13）
+
+- 目标：知妍从"按钮驱动工具"升级为"Agent 根据问题自主决定行动"——输入用户消息，先由 Planner 输出 plan，再由 Action Router 执行。
+- Action Registry 升级（`app/action_registry.py`）：`ActionDefinition` 新增 `description` / `trigger_examples` / `required_context` 自描述元数据；新增第 11 个行动 `assess_customer_risk`（分析客户风险，tool 映射 `get_customer_context` + 风险引擎，由会话锚定买家）；新增 `registry_catalog()` 输出完整目录（未来可直接注入 LLM Planner 提示词）。
+- 新增 `app/planner.py`：
+  - **Planner** `build_plan(message, intent=None, context=None, memory=None)`：输出 `{"mode": "none|direct|planned", "steps": [{"action", "reason", "tool"}]}`。路由规则——明确查询单步直达（direct）；投诉/升级信号（投诉/举报/12315/差评/曝光等）固定规划"历史服务摘要 + 风险评估"两步（planned）；多意图消息为每个诉求各规划一步（上限 3）；闲聊/能力咨询/无法识别不调用任何工具（none）。memory 生效：本轮会话已执行过的行动不重复规划。
+  - **Action Router** `run_plan(tools, session_id, plan)`：Planner ↓ Tool，逐步经 Registry 执行（错误压缩兜底不变），聚合 tools_used / results / evidence，多步回复按行拼接。
+- `handle_copilot_chat` 重接：capability/unknown 直接返回（不调 tool）；business_query/risk_query 交由 Planner 规划、Router 执行，响应新增 `plan_mode` 与 `plan` 字段（可审计规划依据）；`execute_action` 内部分派 `assess_customer_risk`（`_execute_risk_action`），`format_action_result` 新增风险评估渲染与无客户诚实回复分支。API 契约向后兼容（仅新增字段）。
+- 新增 `tests/test_planner.py` 10 例：plan 步骤结构（action/reason/tool）、Registry 目录完整性、多意图多步规划、memory 去重、闲聊/空消息零工具；四个核心 case——物流→get_logistics_info、退款→get_refund_status、投诉→summarize_customer_history + get_customer_context（回复含历史服务摘要与风险等级）、能力询问→零工具。
+- 验证：`python -m unittest discover -s tests -q` 99/99 PASS；重启 9000 端口服务（mock）冒烟四 case：物流 direct/get_logistics_info、退款 direct/get_refund_status、投诉 planned/[summarize_customer_history, assess_customer_risk]、能力 none/零工具，全部符合预期。
+- 已知限制：Planner 为规则版（词表路由），接口已对齐 LLM Planner（registry_catalog + build_plan 签名），接入 qwen live 后可替换为模型规划；context 参数当前预留给风险倾向提示，规则版暂未深度使用。
+
+## M15 RAG Knowledge Brain（2026-10-13）
+
+- 目标：知妍不仅知道业务数据，还知道业务知识；事实类业务优先 Business Tool，知识类问题走 RAG，禁止 RAG 覆盖真实订单数据。
+- 知识库内容（`knowledge/`，纳入版本控制，只含通用政策不含客户数据）：
+  - `product_knowledge.md`（9 切片）：产品线与真实在售商品（含 SKU）、护肤顺序、修护精华液/面霜/洁面/彩妆/洗护用法、适用肤质、保质期与保存、赠品与预售说明；
+  - `after_sales_rules.md`（7 切片）：七天无理由退货条件、退货退款流程、退款与线下打款、物流异常、补换货、不良反应特殊通道、时效与承诺规则；
+  - `service_standards.md`（7 切片）：响应规范、禁用话术、情绪安抚、投诉处理、承诺管理、隐私安全、AI 助手使用规范。
+- 新增 `app/knowledge_base.py`（纯标准库，无网络/无新增依赖）：
+  - **Document ingestion**：markdown 按 H2 切片（过长段落按段落打包，上限 360 字），`knowledge_meta` 清单按内容 hash 增量同步，新增/变更/删除文件自动处理；
+  - **Embedding**：确定性中文字符 unigram+bigram（含 ASCII 词）md5 哈希向量，512 维 L2 归一化，跨进程一致、可持久化；接口对齐未来远程/本地模型（ingest/search 签名不变）；
+  - **Vector retrieval**：SQLite `knowledge_chunks` 持久化切片与向量，余弦相似度 + 0.8 权重的标题命中加权，阈值 0.12，无命中返回空列表。
+- 路由接入（`app/action_registry.py` + `app/planner.py`）：新增 `knowledge_query` 意图与 `search_knowledge_base` 行动（tool=`search_knowledge`）；分类优先级为 能力咨询 → 具体业务事实（不良反应事件/订单号/状态查询）→ 通用知识 → 一般业务 → 风险 → 未知；疑似不良反应事件按业务事件处理（安全优先）；具体状态查询即使提到产品名也强制走业务工具；Planner 多意图去重（命中具体动作后不再追加泛化 check_order）；Router 的知识步骤携带问题原文走 RAG。
+- 回答渲染：命中时输出最优切片全文 + 《文档·小节》参考来源；无命中诚实回复"知识库中暂未找到…"，不编造；检索异常走 G3 错误压缩。
+- API：`GET /api/knowledge/search?q=&top_k=` 只读检索；`POST /api/copilot/chat` 自动注入 KnowledgeStore（启动时建索引）。
+- 新增 `tests/test_knowledge_base.py` 19 例：embedding 确定性/归一化、临时库摄入/持久化/幂等/变更与删除同步/无命中、真实库检索（精华用法/退货条件/保质期）、意图边界（产品+订单混合问走 tool、不良反应走业务、能力零工具）、端到端 chat（产品问→search_knowledge 含用法与来源、政策问→含"7 天"、订单问→get_refund_status 无 RAG 来源、空库诚实拒答）、**全量切片不得出现任何真实订单号**（RAG 不覆盖订单事实的守护断言）。
+- 验证：`python -m unittest discover -s tests -q` 118/118 PASS；重启 9000 端口（mock）冒烟：精华使用→RAG 用法答案、退货条件→7 天政策、退款到账→get_refund_status（NOT_FOUND 诚实回复，未被 RAG 覆盖）、物流→真实运单、knowledge/search 3 命中。
+- 已知限制：embedding 为离线确定性哈希向量（演示与无网环境可用），语义召回弱于神经模型，后续可在 embed() 后接 DashScope embedding；未改动 UI 与 Qwen provider。
+
+## M16 Zhiyan Agent Brain Integration（2026-10-13）
+
+- 目标：整合 Context / Memory / Planner / Action Router / RAG 成完整 Agent，流程为 Input → Context Assembly → Memory Retrieval → Planning → Action Selection → Tool/RAG → Response Generation，并新增 Response Grounding Check（回答必须有依据，禁止无证据业务事实）。
+- 新增 `app/agent_brain.py`（唯一编排入口，不改各模块内部实现）：
+  - `process_message(tools, session_id, message, knowledge_store, context_engine, memory)`：按阶段执行完整管线，响应暴露全部阶段信息——`intent` / `context_used`（M12 统一上下文）/ `memory_used`（服务历史摘要 + 本会话历史 Agent 轮次）/ `plan_mode` + `plan`（M14 Planner）/ `tools_used` + `results` + `evidence`（M14 Router 执行 / M15 RAG）/ `message`（Response Generation）/ `grounding`（Grounding Check）。能力咨询/无法识别按 M14 规则不进入工具链路，直接返回能力介绍或诚实说明。
+  - `SessionMemory`：进程级会话记忆，按 session_id 保留最近 10 轮记录（intent / plan steps / tools_used），回传给 Planner 实现同会话不重复规划已执行行动；服务记忆从装配上下文提取（客户历史会话数/订单/工单/承诺），无数据则不产出记忆条目。
+  - `grounding_check(message, results)`：事实信号 = 运单/订单/工单号类 token（字母前缀+6 位以上数字或 8 位以上连续数字）与金额；证据 = status=OK 结果的 data JSON（RAG 命中切片文本同属证据，引用来源即依据）。出现事实但无任何 OK 证据、或事实无法在证据中定位即判定无依据；管线在判定失败时用诚实兜底回复替换原答复（原答复保留在 `grounding.original_reply` 供审计），不编造任何业务事实。
+- API：`POST /api/copilot/chat` 改接 `process_message`，`create_app` 增加 `ContextEngine` 实例复用；响应新增 `context_used` / `memory_used` / `results` / `grounding` 字段，`message` / `intent` / `tools_used` / `plan` 契约不变，前端零改动兼容。
+- 新增 `tests/test_agent_brain.py` 11 例：四个验收场景——物流咨询（context 装配 + get_logistics_info + grounding 通过）、历史投诉（service_history 记忆检索；第二轮 past_turns 记忆生效，plan 去重为仅风险更新）、产品使用（search_knowledge 命中 RAG，含用法与参考来源）、复杂投诉（planned 两步：历史摘要 + 风险评估）；能力询问零工具、未知会话诚实拒答且无记忆、grounding 失败注入测试（mock run_plan 返回编造运单号 → 答复被兜底替换并保留原答复审计）；GroundingCheck 单元测试（无证据事实拒绝 / 有证据通过 / 空事实 vacuous 通过）。
+- 验证：`python -m unittest discover -s tests -q` 129/129 PASS（118 + 11）；重启 9000 端口（mock）HTTP 冒烟——物流：context:Y get_logistics_info:Y grounding=True；产品使用：search_knowledge:Y 参考来源:Y grounding=True；复杂投诉：plan_mode=planned 两步含历史服务摘要 grounding=True；能力询问：plan_mode=none 零工具；memory 跨轮：第二轮 plan=[assess_customer_risk]、memory_types=[past_turns, service_history]。
+- 已知限制：SessionMemory 为进程级（服务重启即清空，跨进程持久化留待后续）；grounding 为规则化事实核对（单号/金额级），语义级事实核对待接入 qwen live 后可由模型复核；未改动 UI、Risk 算法、Qwen provider。
+
+## M17 Knowledge Pipeline 工程化升级 + M18 Retrieval Intelligence Layer（2026-10-13）
+
+- 目标：把 M15 RAG 从"文件→向量→查询"升级为标准知识管道（Loader → Document → Chunk → Embedding → VectorStore → Retriever → Generation），并补检索智能（改写/混合/精排），解决"知识进不来、找错资料"。
+- 新增 `app/knowledge_loader.py`（M17.1 统一知识接入层）：`Document`（page_content + metadata）为标准单元；`KnowledgeLoader` 按来源分发——MarkdownLoader（支持 front-matter 声明 metadata）、ExcelLoader（openpyxl，表头含 text 列、其余列进 metadata，用于成分表/活动规则等表格知识）、DatabaseLoader（只读 SQL，仅政策配置类表，禁止客户/订单数据）、ApiLoader（注入式 fetch 回调，无网络演示环境默认返回空）。`load_path()` 按扩展名（.md/.xlsx/.xlsm）分发；文档级 metadata 自动继承到切片。
+- M17.2 Document metadata：三份 md 知识文件头部补 front-matter（category/source/update_time/confidence）；`knowledge_chunks` 表新增 `metadata` 列（启动时检测缺列自动 ALTER 迁移，旧切片置空对象）；检索结果与 `/api/knowledge/search` 响应随切片返回 metadata，回答可追溯"结论来自哪里"。
+- 重构 `app/knowledge_base.py`：`ingest_documents()` 为统一摄入入口（文件/数据库/API 共用），`ensure_index` 同步扫描 md+xlsx；`KnowledgeRetriever` 独立封装——不绑定具体 VectorStore，候选由注入的 `candidate_fn` 提供（换存储/远程 embedding 只换候选函数）。
+- 新增 `app/query_rewriter.py`（M18.1）：规则版同义词改写（"脸疼"→刺痛/过敏/不良反应等 15 组映射），标准词附加原查询后进入检索；接口预留 LLM 改写替换。
+- M18.2 Hybrid Retrieval + M18.3 Rerank：粗排宽阈值召回池（top 20，0.5× 阈值）→ 精排多信号重排（语义分 + 0.8×标题分 + 0.5×关键词覆盖率）→ 阈值过滤 top_k；semantic 与 keyword 双通道显式融合。
+- 安全优先补丁：chat 意图层把口语不良反应词（脸疼/脸痛/红肿/辣眼睛等 7 个）纳入 ADVERSE_EVENT_TERMS 与 BUSINESS_ROUTES——"这个用了脸疼怎么办"判业务事件走 `get_adverse_reaction_record`（真实工单），不走 RAG。
+- 新增 `tests/test_knowledge_pipeline.py` 16 例：front-matter 解析、Markdown/Excel/Database/Api 四类 Loader、空行跳过、改写命中与不命中、口语查询经改写命中不良反应章节且 metadata 随结果返回、混合精排标题双命中排第一、Excel+Database 双源进同一库可检索、Retriever 注入式独立组装、口语不良反应路由业务工具；现有 19 例知识库测试零修改全部通过。
+- 验证：`python -m unittest discover -s tests -q` 145/145 PASS（129 + 16）；重启 9000 端口（mock）HTTP 冒烟——产品问题 chat：knowledge_query + search_knowledge + 参考来源 + grounded；knowledge/search：metadata（产品知识/产品说明书/2026-10/0.95）完整返回；chat"这个用了脸疼怎么办"：business_query + get_adverse_reaction_record + 真实工单编号；search"脸疼"：《不良反应特殊处理通道》首位。
+- 已知限制：PDFLoader 暂缓（无真实 PDF 知识源前不引入 pypdf，Loader 架构已预留扩展点）；Query Rewrite 为规则版（接 qwen live 后可换 LLM 改写）；Rerank 权重（0.8 标题/0.5 关键词覆盖）为样例调优值，待真实评估集校准；未改动 UI、Risk 算法、Qwen provider。
+
+## M19 Tool Governance 增量 + M20 Conversation State Machine + M21 Agent Evaluation System（2026-10-13）
+
+- M19 工具治理增量：`ActionDefinition` 新增 `input_schema` 属性（由 required_context 推导 JSON Schema 风格输入契约，免逐条维护），`registry_catalog()` 输出 inputs 供 Planner/审计使用；顺手修复 `search_knowledge_base` 的 required_context 缺逗号笔误（字符串误作 tuple，由 input_schema 校验暴露）。
+- M20 会话状态机（新增 `app/conversation_state.py`）：`conversation_state` 表（session_id PK / stage / last_intent / last_actions / updated_at）落业务库，跨重启存活；阶段集 new→confirmed→classified→querying→processing→awaiting_feedback→resolved，规则版推导 `derive_stage`（能力/闲聊=new；结果含 NOT_FOUND=awaiting_feedback；其余=processing）；指代消解 `follow_up_action`——无法识别的短消息（≤12 字）或命中追问标记（还是/还没/怎么样了/然后呢等）时，继承上一轮业务行动重新执行，解决"还是没有到账/怎么样了"类追问重新开始的问题。已接入 `process_message`：每轮结束状态迁移落库，响应新增 `state: {stage, follow_up}` 字段。
+- M21 评估系统（新增 `app/agent_evaluation.py` + `tests/gold/agent_eval_cases.json`）：四指标离线基线——Tool Accuracy（7 例：物流/退款/快递/产品/能力/投诉/口语不良反应，expected 全命中且 forbidden 零命中）、Retrieval Accuracy（4 例首位切片命中期望文档/小节，含"脸疼"改写用例）、Hallucination Rate（全量回复 grounding 无依据占比）、Memory Accuracy（投诉两轮 plan 去重验证）；`python -m app.agent_evaluation` 输出 JSON 报告；阈值 tool≥0.8 / retrieval≥0.8 / hallucination=0 / memory=1.0，低于阈值视为回归。当前实测全部 1.0/1.0/0.0/1.0，all_passed=true。评估会话状态写入自有 `conversation_state` 表，不动业务数据。
+- 新增 `tests/test_agent_evaluation.py` 12 例：input_schema 完整性与 catalog 暴露、状态迁移往返/非法阶段拒绝/指代消解触发与不触发/derive_stage 规则、端到端追问继承（退款→"怎么样了"复用 check_refund）、状态跨实例持久（新实例读同库）、gold 用例格式校验、四指标阈值断言。
+- 验证：`python -m unittest discover -s tests -q` 155/155 PASS（145 + 10，评估与治理合入 12 例含修复后重跑）；评估报告四指标 1.0/1.0/0.0/1.0；重启 9000 端口（mock）HTTP 冒烟——S00362"退款到账了吗"→get_refund_status（stage=processing），追问"怎么样了"→follow_up=True、继承 check_refund 重新执行；S00082 物流查询 grounding evidence=1、grounded=True。
+- 已知限制：状态推导与指代消解为规则版（接 qwen live 后可换模型消解长指代）；评估 gold 集规模小（12 例），需随真实客服语料扩充；前端未展示 state 字段（契约已备好，UI 接入留待后续）；未改动 UI、Risk 算法、Qwen provider。
+
+## 2026-10-14 UI 微调：聊天身份标签样式统一（样式层，无逻辑变更）
+
+- 需求：对话框中"知妍/客服/买家"身份标签移到气泡外上方、统一灰色，删除"客服"标签。
+- 改动（仅前端）：`main_m11.tsx` 主对话区与 `BeautyCopilotPlugin.tsx` 知妍 Agent 对话框——气泡行改为列布局，客服/assistant 角色不渲染标签，其余角色（买家/知妍/用户）在气泡外上方渲染 `<span class="bubble-role">`；`styles.css` 新增 `.bubble-role`（#98a2b3 灰、10px）与 `.bubble-row` 列布局，`.agent-chat-line` 由行布局改列布局，删除气泡内 `<b>` 角色名的死样式。
+- 验证：`vite build` 成功；浏览器实测（localhost:9000）——中间聊天区买家标签灰色位于气泡外上方、客服消息无标签；Agent 对话框知妍有灰色标签、客服无标签。
+- 注意：前端 API 写死 `http://localhost:9000`，须以 localhost（而非 127.0.0.1）打开页面，否则跨源导致数据加载失败。
+
+## 2026-10-14 UI 微调 2：删按钮 + 千牛式三栏等高（样式层）
+
+- 需求：删除"加载真实场景""重新加载原始会话"按钮；左/中/右三栏像千牛工作台一样同高、填满视口、各自内部滚动。
+- 改动（仅前端）：`main_m11.tsx` 删两个按钮及死代码 `reset`（"真实案例快捷入口"下拉保留）；`styles.css` 追加布局块——`.app` 改为 `height:100vh` flex 列 + `overflow:hidden`，`.app>main` `flex:1;min-height:0;overflow:auto`，`.workbench-layout` `align-items:stretch`，左栏与右插件整栏 `overflow:auto`，中间 `.conversation` flex 列 + `.chat` 内部滚动（回复编辑器固定底部）；≤800px 移动端回退为普通文档流。
+- 验证：`vite build` 成功；浏览器实测按钮已消失；三栏等高因测试浏览器视口 669px 触发移动端断点无法实测，宽屏（≥1000px）下为用户本地可验证的标准满高 grid 模式。
+
+## 2026-10-14 M22 Conversational Response Generation（LLM 人性化对话）
+
+- 问题：chat 链路此前无论 mock/live 都是规则模板拼回复，"你好"只得僵硬兜底话术，做不到自由问答、人性化、上下文记忆对答。
+- 新增 `app/response_generator.py`：qwen live 模式下由 LLM 生成回复——系统提示固化知妍人设/能力边界/事实纪律（业务事实只能来自工具证据、知识只来自 RAG、≤120 字口语化）；消息组装 = 系统提示 + 服务上下文摘要 + 本轮业务核查结果 + 最近 6 轮对话历史 + 用户问题；mock/异常/空内容一律返回 None 回退规则模板。
+- `agent_brain.py`：`process_message` 新增 `llm_provider` 参数；能力咨询/闲聊分支 live 时 LLM 自由回应（grounding 复核，含编造事实则回退兜底）；业务/知识分支优先采用 LLM 基于证据的人性化表述，grounding 不通过则保留规则模板；`SessionMemory` 记录升级为 user/reply 原文（供多轮对答）+ plan steps（供去重）。
+- `conversation_state.py` 修复：`follow_up_action` 新增 `_is_chitchat` 整句归一化判定——"你好/谢谢/在吗"等闲聊不再误继承上一轮业务行动（"怎么样了"等追问不受影响）。
+- `api.py` chat 端点传入 `agent.provider`。
+- 新增 `tests/test_response_generator.py` 13 例：mock 不变、live 问候人性化、编造事实拦截、异常静默回退、历史进消息、NOT_FOUND 标注、记忆写回、闲聊/追问边界回归；测试用独立临时状态机库隔离。
+- 验证：全量 169/169 PASS；qwen live 冒烟（真实 Qwen）——"你好"自然问候、"你能做什么"自然介绍、"物流到哪了"带真实顺丰单号（grounded）、"怎么样了"正确继承追问、"修护精华液怎么使用"RAG 作答、"我刚才问你什么了"正确回忆上文；S00474 无物流记录时诚实拒答并引导提供订单号。
+- 运行方式：启动脚本不再注入 `AGENT_PROVIDER=mock` 即走 qwen live（.env 已配 AGENT_PROVIDER=qwen）；当前服务以 live 模式运行，每次对话产生真实 token 消耗（free_only 限额 1024 tokens/轮）。

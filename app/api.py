@@ -9,8 +9,11 @@ from typing import Any
 from app.qwen_agent import BeautyAgent
 from app.business_tools import BusinessTools
 from app.action_registry import execute_action, format_action_result, recommend_actions
+from app.agent_brain import process_message
 from app.config import load_env
+from app.context_engine import ContextEngine
 from app.human_feedback import record_feedback
+from app.knowledge_base import KnowledgeStore
 from app.risk_engine import assess_context
 from app.task_state import get_task, list_tasks
 
@@ -42,6 +45,7 @@ class CopilotActionRequest(BaseModel if FastAPI else object):
 class CopilotChatRequest(BaseModel if FastAPI else object):
     session_id: str
     message: str
+    request_id: str | None = None
 
 
 class CopilotFeedbackRequest(BaseModel if FastAPI else object):
@@ -77,6 +81,10 @@ def create_app():
     app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:5174", "http://127.0.0.1:5174"], allow_methods=["*"], allow_headers=["*"])
     agent = BeautyAgent(DB_PATH)
     tools = BusinessTools(DB_PATH)
+    context_engine = ContextEngine(DB_PATH)
+    knowledge_store = KnowledgeStore(DB_PATH, Path(__file__).resolve().parents[1] / "knowledge")
+    knowledge_store.ensure_index()
+    copilot_request_cache: dict[str, dict[str, Any]] = {}
 
     def ensure_tracking_table() -> None:
         with sqlite3.connect(DB_PATH) as conn:
@@ -93,9 +101,13 @@ def create_app():
         for buyer in buyers:
             context = tools.get_customer_context(buyer)
             result = assess_context(context)
+            message_times = sorted(str(item.get("sent_at")) for item in context.get("messages", []) if item.get("sent_at"))
             for finding in result["findings"]:
                 risk_id = f"{buyer}:{finding['rule_id']}"
-                events.append({"id": risk_id, "buyer_nickname": buyer, "status": statuses.get(risk_id, {}).get("status", "open"), "note": statuses.get(risk_id, {}).get("note", ""), **finding})
+                # The risk table has no independent creation timestamp.  Expose
+                # the latest supporting chat timestamp as an observed_at value so
+                # read-only dashboard aggregation can show a truthful trend.
+                events.append({"id": risk_id, "risk_id": risk_id, "buyer_nickname": buyer, "status": statuses.get(risk_id, {}).get("status", "open"), "note": statuses.get(risk_id, {}).get("note", ""), "observed_at": message_times[-1] if message_times else None, "risk_type": finding.get("category"), **finding})
         return events
 
     @app.get("/health")
@@ -193,19 +205,20 @@ def create_app():
 
     @app.post("/api/copilot/chat")
     def copilot_chat(request: CopilotChatRequest) -> dict[str, Any]:
-        if not tools.get_conversation(request.session_id):
-            raise HTTPException(status_code=404, detail="session not found")
         text = request.message.strip()
         if not text:
             raise HTTPException(status_code=400, detail="message is required")
-        actions = recommend_actions(tools, request.session_id)
-        selected = next((item for item in actions if any(term in text for term in ("物流", "快递", "收到", "发货")) and item["action_id"] == "check_logistics"), None)
-        selected = selected or next((item for item in actions if any(term in text for term in ("退款", "到账", "打款")) and item["action_id"] in {"check_refund", "check_payment"}), None)
-        selected = selected or (actions[0] if actions else None)
-        if not selected:
-            return {"session_id": request.session_id, "message": "当前没有可执行的业务查询，请提供更具体的问题。", "tools_used": [], "evidence": []}
-        result = execute_action(tools, selected["action_id"], request.session_id)
-        return {"session_id": request.session_id, "message": format_action_result(result), "tools_used": [result.get("tool_name")], "evidence": [{"source": result.get("source"), "status": result.get("status"), "action_id": result.get("action_id")}]}
+        # request_id 是发送动作的幂等键：先查缓存再路由，双击/Enter 重复提交不会二次执行工具
+        if request.request_id and request.request_id in copilot_request_cache:
+            return copilot_request_cache[request.request_id]
+        if not tools.get_conversation(request.session_id):
+            raise HTTPException(status_code=404, detail="session not found")
+        response = {"request_id": request.request_id, "session_id": request.session_id, **process_message(tools, request.session_id, text, knowledge_store=knowledge_store, context_engine=context_engine, llm_provider=agent.provider)}
+        if request.request_id:
+            copilot_request_cache[request.request_id] = response
+            if len(copilot_request_cache) > 256:
+                copilot_request_cache.pop(next(iter(copilot_request_cache)))
+        return response
 
     @app.post("/api/copilot/feedback")
     def copilot_feedback(request: CopilotFeedbackRequest) -> dict[str, Any]:
@@ -217,6 +230,15 @@ def create_app():
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
         return {"feedback_id": feedback_id, "conversation_id": request.conversation_id, "recorded": True}
+
+    @app.get("/api/knowledge/search")
+    def knowledge_search(q: str, top_k: int = 3) -> dict[str, Any]:
+        """M15 RAG：通用产品知识/售后规则/客服规范检索（只读，不含任何订单事实）。"""
+        query = (q or "").strip()
+        if not query:
+            raise HTTPException(status_code=400, detail="q is required")
+        matches = knowledge_store.search_dicts(query, top_k=max(1, min(top_k, 5)))
+        return {"query": query, "items": matches, "total": len(matches)}
 
     @app.get("/api/risks")
     def risks(level: str | None = None, status: str | None = None) -> dict[str, Any]:

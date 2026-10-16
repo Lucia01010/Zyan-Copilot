@@ -15,7 +15,7 @@ def request(base: str, path: str, method: str = "GET", body: dict | None = None)
 
 
 def main() -> None:
-    base = sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:8000"
+    base = sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:9000"
     risks = request(base, "/api/risks")
     if not risks.get("items"):
         raise SystemExit("no risk items returned")

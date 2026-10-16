@@ -1,52 +1,85 @@
-# 知妍 AI
+# 知妍 AI · 美妆客服智能副驾
 
-## Zhiyan Beauty Copilot
+**Zhiyan Beauty Copilot** 是一款面向美妆品牌客服场景的 AI 智能副驾。它以大模型 Agent 理解消费者意图，打通订单、物流、退款售后等业务系统与产品/服务知识库，在客服工作台中提供实时接待辅助，并持续识别、预警和跟踪服务风险，帮助团队在提升响应速度与回答质量的同时，把每一句回复都建立在可核查的事实依据之上。
 
-知妍 AI 是面向美妆客服场景的智能接待与风险洞察 Copilot。知妍 AI 通过大模型 Agent 理解消费者需求，结合订单、物流、历史服务等业务信息，为客服提供实时辅助，并帮助企业发现和跟踪服务风险。
+## 产品功能
 
-产品模块：知妍·伴答（智能接待辅助插件）、知妍·洞察（风险预警与跟踪看板）、知妍·智核（Agent Runtime、业务 Tools 与 Hybrid Risk Engine）。
+### 知妍·伴答 —— 智能接待辅助
 
-本项目使用真实赛题数据、SQLite 业务 Tools、Qwen Agent 和 Hybrid Risk，提供 React 模拟千牛工作台 `/workbench` 与知妍·洞察 `/risk-dashboard`。按照官方答疑，比赛不要求真实千牛生产部署。
+嵌入千牛风格的客服工作台，客服与消费者对话时可获得侧栏实时辅助：
 
-## Architecture
+- **自然语言自由问答**：由大模型基于业务证据生成人性化回复，而非固定模板话术；支持类似真实助理的自由对答体验。
+- **多轮上下文记忆**：持久化会话状态，支持跨轮指代消解（如“那它多久到”“再帮我查下退款”），闲聊问候不会错误继承业务上下文。
+- **业务事实实时查询**：通过结构化业务工具查询订单状态、物流进度、退款/售后进度等，返回的均为系统中的真实业务数据。
+- **产品与服务知识咨询**：RAG 知识库覆盖产品使用方法、售后规则、客服服务规范；采用语义 + 关键词混合检索与精排，产品编号等关键词查询同样可命中，并标注来源文档与小节。
+- **回复依据校验（Grounding Check）**：所有业务类回答必须有证据支撑，知识库内容不会覆盖真实订单数据；证据不足时诚实兜底，不臆断、不编造，全过程保留审计记录。
+- **人机协同**：客服可采纳或修正 AI 建议，人工反馈持久化留痕，形成完整服务审计链路。
+- **接待风险提示**：对话中识别投诉、升级等高风险信号并即时提醒。
 
-`React simulated workbench + risk dashboard → FastAPI → SQLite/business Tools → Qwen Agent or cached/mock provider → Hybrid Risk`
+### 知妍·洞察 —— 服务风险看板
 
-真实千牛商家接入属于可选 M11，不是本 Demo 的完成条件。
+- 汇聚会话与业务数据，对服务风险进行**预警、分级与跟踪**。
+- 可视化风险分布与处置进展，帮助管理者及早发现批量性售后问题。
 
-## Windows 比赛 Demo 最短启动步骤
+### 知妍·智核 —— Agent 运行时
 
-首次使用先完成环境准备：
+- **完整 Agent 链路**：输入 → 上下文组装 → 记忆检索 → 会话状态 → 规划 → 动作选择 → 工具/RAG 调用 → 回复生成 → 依据校验。
+- **规划与查询理解**：Planner 负责任务拆解，查询改写模块优化检索表达；事实类问题路由业务工具，知识类问题路由 RAG。
+- **工具注册体系**：业务工具显式声明输入 Schema，统一注册目录管理，便于扩展。
+- **混合风险引擎（Hybrid Risk Engine）**：规则与模型结合的风险判定。
+- **可量化评估体系**：覆盖工具调用准确率、检索准确率、幻觉率、记忆准确率四项核心指标，配套金标准用例，持续度量 Agent 质量。
+- **数据安全纪律**：知识库仅存储通用业务知识，不包含真实订单数据或用户隐私。
+
+## 系统架构
+
+```
+React 客服工作台 / 风险看板
+        │  FastAPI
+        ▼
+Agent Runtime（Planner · Memory · Conversation State · Action Registry）
+        │
+        ├── 业务 Tools（订单 / 物流 / 退款售后，SQLite）
+        ├── RAG 知识库（语义 + 关键词混合检索、精排）
+        └── Hybrid Risk Engine
+        │
+   Qwen 大模型（Live）/ 离线可复现缓存模式（Demo）
+```
+
+## 快速开始（Windows）
+
+首次使用完成环境准备：
 
 ```powershell
 Copy-Item .env.example .env
 powershell -ExecutionPolicy Bypass -File scripts/setup.ps1
 ```
 
-日常启动只需**双击 `scripts/start_zhiyan.cmd`**（单进程：后端同时托管已构建的前端，自动打开浏览器），访问 `http://localhost:8000/workbench` 或 `http://localhost:8000/risk-dashboard`，健康检查为 `http://127.0.0.1:8000/health`。默认 `DEMO CACHED MODE`，不依赖 Qwen 网络。
+日常启动只需**双击 `scripts/start_zhiyan.cmd`**（单进程：后端同时托管已构建的前端并自动打开浏览器）：
 
-> 前端代码改动后，在 `frontend/` 执行 `npm run build`，刷新 8000 页面即可生效；需要热更新开发体验时再用 `npm run dev`（5173）。
+- 客服工作台：`http://localhost:9000/workbench`
+- 风险看板：`http://localhost:9000/risk-dashboard`
+- 健康检查：`http://127.0.0.1:9000/health`
 
-## Demo Mode 与 Live Qwen Mode
+默认使用离线缓存模式，不依赖外部模型网络即可完整体验。前端改动后在 `frontend/` 执行 `npm run build` 刷新页面即可；需要热更新时使用 `npm run dev`（5173 端口）。
 
-- **DEMO CACHED MODE**：`AGENT_PROVIDER=mock`、固定 SQLite 场景和前端离线 fallback，适合比赛现场和视频录制；UI 必须保留模式标识，不冒充实时模型。
-- **LIVE QWEN MODE**：显式设置 `AGENT_PROVIDER=qwen`、`QWEN_API_KEY`、`QWEN_BASE_URL`、`QWEN_MODEL` 后使用 OpenAI-compatible endpoint。网络/API 失败时由人工明确切换回 Demo Mode，不自动静默伪装。
+## 运行模式
 
-重置演示状态（不会修改 `data/raw`）：
+- **离线缓存模式（默认）**：`AGENT_PROVIDER=mock`，提供固定可复现的演示场景与前端离线兜底，界面明确标识模式，不冒充实时模型。
+- **实时大模型模式**：显式设置 `AGENT_PROVIDER=qwen`、`QWEN_API_KEY`、`QWEN_BASE_URL`、`QWEN_MODEL`，通过 OpenAI 兼容接口接入 Qwen；网络或凭证异常时由人工明确切回缓存模式，不静默伪装。
+
+重置本地演示状态（不会修改 `data/raw` 中的原始数据）：
 
 ```powershell
 & '.venv\Scripts\python.exe' scripts/reset_demo.py
 ```
 
-启动前检查：
+启动前环境检查：
 
 ```powershell
 & '.venv\Scripts\python.exe' scripts/demo_preflight.py
 ```
 
-默认 `AGENT_PROVIDER=mock`，日常 UI 开发和普通测试不会调用远程模型。远程 Qwen 只在明确设置 `AGENT_PROVIDER=qwen` 并运行 live evaluation/smoke 时调用，使用 `.env` 中的 OpenAI-compatible endpoint 配置。比赛开发阶段默认 `QWEN_FREE_ONLY=true`：只运行有限串行 case、每 case 最多 4 轮、`QWEN_MAX_TOKENS` 默认 512，并由 `QWEN_EVAL_TOKEN_BUDGET=50000` 保护总额度；遇到 quota/billing/余额不足会立即停止，不切换其他模型或付费路径。不要提交 `.env` 或任何 API Key。
-
-## 验证命令
+## 验证
 
 ```powershell
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
@@ -55,13 +88,21 @@ npm run typecheck
 npm run build
 ```
 
-后端、前端和知妍·洞察的 smoke 验收证据记录在 `docs/PROJECT_STATE.md`；比赛场景和操作路径见 `docs/DEMO_SCENARIOS.md`、`docs/DEMO_SCRIPT.md`。
+## 目录结构
+
+```
+app/        Agent Runtime、业务工具、RAG、风险引擎与 FastAPI 接口
+frontend/   React 客服工作台与风险看板
+knowledge/  通用业务知识语料（售后规则、产品知识、服务规范）
+tests/      单元测试与评估金标准用例
+scripts/    环境准备、启动与巡检脚本
+docs/       设计说明与验收记录
+data/       本地业务数据库（原始材料只读）
+```
 
 ## 常见问题
 
-- **没有 Qwen 凭证怎么办？** 使用 `scripts/start_demo.ps1` 的 Demo Mode；不要把 `.env.example` 占位符当作凭证。
-- **端口被占用怎么办？** 停止已有的 uvicorn/Vite 进程，或手工启动并同步 CORS/前端 API 地址。
-- **为什么页面显示 cached？** 这是可复现的比赛演示结果，不是实时 Qwen 响应。
-- **是否必须接入千牛生产环境？** 不需要；真实接入是可选 M11。
-
-项目状态和 milestone 验收见 `docs/PROJECT_STATE.md` 与 `.codex/skills/beauty-cs-agent-builder/references/ACCEPTANCE.md`。
+- **没有大模型凭证可以使用吗？** 可以，默认离线缓存模式即可体验全部界面与流程；配置 Qwen 凭证后切换为实时模式。
+- **端口被占用怎么办？** 停止已有的 uvicorn/Vite 进程，或更换端口后同步前端 API 地址。
+- **页面为什么显示 cached？** 表示当前为离线缓存模式，回复来自预置场景而非实时模型，切换为实时模式需要显式配置。
+- **是否可以接入真实客服工作台？** 前端以千牛工作台为交互蓝本，后端工具与 Agent 能力以接口形式提供，可按实际工作台插件规范对接。

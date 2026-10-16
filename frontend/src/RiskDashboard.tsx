@@ -2,9 +2,41 @@ import React, { useEffect, useState } from 'react'
 import { riskCategoryLabel, riskLevelLabel, riskStatusLabel } from './pluginRuntime'
 import { MascotIcon } from './components/brand/Brand'
 
-const api = import.meta.env.VITE_API_URL || 'http://localhost:8000'
-type Risk = { id: string; level: string; category: string; reason: string; recommended_action: string; evidence?: Record<string, unknown>; status?: string; note?: string; buyer_nickname?: string; session_id?: string }
+const api = import.meta.env.VITE_API_URL || 'http://localhost:9000'
+type Risk = { id: string; risk_id?: string; level: string; category: string; reason: string; recommended_action: string; evidence?: Record<string, unknown>; status?: string; note?: string; buyer_nickname?: string; session_id?: string; observed_at?: string | null }
 type RiskDetail = Risk & { customer?: Record<string, unknown>; session?: Record<string, unknown>; orders?: Array<Record<string, unknown>>; work_orders?: Array<Record<string, unknown>>; risk_reasons?: string[]; service_timeline?: Array<Record<string, string>> }
+type RiskFilter = { level?: string; category?: string; status?: string; customer?: string }
+const levels = ['critical', 'high', 'medium', 'low']
+const levelColors: Record<string, string> = { critical: '#bb3e4b', high: '#d47a35', medium: '#c5a247', low: '#578b76' }
+const statusColors: Record<string, string> = { pending: '#d47a35', processing: '#8064aa', resolved: '#578b76', ignored: '#98a2b3' }
+const normalizedStatus = (status?: string) => !status || status === 'open' ? 'pending' : status
+
+function countBy(items: Risk[], key: (risk: Risk) => string): Array<[string, number]> {
+  const counts = new Map<string, number>()
+  items.forEach(risk => { const value = key(risk); counts.set(value, (counts.get(value) || 0) + 1) })
+  return [...counts].sort((a, b) => b[1] - a[1])
+}
+
+function ChartCard({ title, subtitle, children, wide = false }: { title: string; subtitle: string; children: React.ReactNode; wide?: boolean }) {
+  return <section className={`insight-chart panel ${wide ? 'wide-chart' : ''}`}><div className="chart-heading"><h3>{title}</h3><p>{subtitle}</p></div>{children}</section>
+}
+
+function BarChart({ rows, total, label, color, onSelect, selected }: { rows: Array<[string, number]>; total: number; label: (key: string) => string; color: (key: string) => string; onSelect: (key: string) => void; selected?: string }) {
+  if (!rows.length) return <div className="chart-empty">暂无足够数据</div>
+  return <div className="chart-bars">{rows.map(([key, count]) => <button type="button" key={key} className={`chart-bar-row ${selected === key ? 'active' : ''}`} onClick={() => onSelect(key)} aria-label={`${label(key)} ${count} 条，点击筛选`}><span className="chart-bar-label">{label(key)}</span><span className="chart-bar-track"><span style={{ width: `${Math.max(3, count / Math.max(total, 1) * 100)}%`, background: color(key) }} /></span><strong>{count}</strong></button>)}</div>
+}
+
+function TrendChart({ risks }: { risks: Risk[] }) {
+  const counts = new Map<string, number>()
+  risks.forEach(risk => { const date = risk.observed_at?.slice(0, 10); if (date) counts.set(date, (counts.get(date) || 0) + 1) })
+  const dates = [...counts.keys()].sort().slice(-14)
+  if (dates.length < 2) return <div className="chart-empty">当前暂无足够时间序列数据</div>
+  const values = dates.map(date => counts.get(date) || 0)
+  const max = Math.max(...values, 1)
+  const width = 720; const height = 150; const padX = 28; const padY = 20
+  const points = values.map((value, index) => `${padX + index * ((width - padX * 2) / (values.length - 1))},${height - padY - (value / max) * (height - padY * 2)}`).join(' ')
+  return <div className="trend-wrap"><svg className="trend-svg" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="风险趋势图"><line x1={padX} y1={height - padY} x2={width - padX} y2={height - padY} stroke="#eee5f2" /><polyline points={points} fill="none" stroke="#8064aa" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />{values.map((value, index) => { const x = padX + index * ((width - padX * 2) / (values.length - 1)); const y = height - padY - (value / max) * (height - padY * 2); return <g key={dates[index]}><circle cx={x} cy={y} r="4" fill="#8064aa" /><text x={x} y={height - 3} textAnchor="middle" className="trend-label">{dates[index].slice(5)}</text><title>{dates[index]}：{value} 条风险</title></g> })}</svg><p className="chart-note">趋势基于风险识别时间或关联服务记录时间统计</p></div>
+}
 
 async function getJson<T>(path: string, options?: RequestInit): Promise<T> {
   const response = await fetch(`${api}${path}`, options)
@@ -14,32 +46,34 @@ async function getJson<T>(path: string, options?: RequestInit): Promise<T> {
 
 type DetailProps = { selected: RiskDetail; status: string; note: string; saving: boolean; setStatus: (value: string) => void; setNote: (value: string) => void; save: () => void }
 
-function RiskDetailInline({ selected, status, note, saving, setStatus, setNote, save }: DetailProps) {
-  return <aside className="panel risk-detail inline-risk-detail">
+function RiskDetailModal({ selected, status, note, saving, setStatus, setNote, save, onClose }: DetailProps & { onClose: () => void }) {
+  return <div className="modal-overlay" onClick={onClose}><div className="modal-content" onClick={event => event.stopPropagation()}>
     <div className="panel-title"><div className="risk-detail-brand"><MascotIcon size={32}/><div><span className="eyebrow">知妍风险分析</span><h2>风险详情</h2></div></div><span className={`badge ${selected.level}`}>{riskLevelLabel(selected.level)}</span></div>
     <p className="detail-copy">风险事件：{selected.id}<br />客户：{selected.buyer_nickname || '客户信息缺失'}<br />会话：{selected.session_id || '未关联'}<br />类别：{riskCategoryLabel(selected.category)}</p>
     <h3>风险原因</h3><ul>{(selected.risk_reasons || [selected.reason]).map((reason, index) => <li key={index}>{reason}</li>)}</ul>
-    <h3>关键依据</h3><pre>{JSON.stringify(selected.evidence || {}, null, 2)}</pre>
+    <h3>关键依据</h3><div className="evidence-list">{Object.entries(selected.evidence || {}).map(([key, value]) => <div className="evidence-row" key={key}><b>{key}</b><span>{typeof value === 'string' ? value : typeof value === 'number' ? String(value) : Array.isArray(value) ? value.join('、') : JSON.stringify(value)}</span></div>)}</div>
     <h3>订单 / 工单</h3><div className="facts"><span>订单 {selected.orders?.length || 0} 条</span><span>工单 {selected.work_orders?.length || 0} 条</span></div>
     <div className="detail-context">{(selected.orders || []).slice(0, 3).map((order, index) => <div key={`order-${index}`}><b>订单 {String(order.order_number || order.id || '未知')}</b><span>{String(order.status || order.order_status || '状态未知')} · {String(order.product_name || order.product || '商品信息未返回')}</span></div>)}{(selected.work_orders || []).slice(0, 3).map((ticket, index) => <div key={`ticket-${index}`}><b>工单 {String(ticket.work_order_number || ticket.ticket_number || ticket.id || '未知')}</b><span>{String(ticket.type || ticket.reason || ticket.status || '工单信息已关联')}</span></div>)}</div>
     <h3>服务轨迹</h3><div className="timeline detail-timeline">{(selected.service_timeline || []).slice(-8).map((message, index) => <div key={index}><b>{message.sent_at || `步骤 ${index + 1}`} · {message.role || '记录'}</b><span>{message.message_text || message.chat_content || ''}</span></div>)}{!selected.service_timeline?.length && <span className="detail-copy">暂无服务轨迹。</span>}</div>
     <h3>处理建议</h3><p className="detail-copy">{selected.recommended_action}</p>
-    <h3>当前状态</h3><select value={status} onChange={event => setStatus(event.target.value)}><option value="pending">待处理</option><option value="processing">处理中</option><option value="resolved">已解决</option></select>
+    <h3>当前状态</h3><select value={status} onChange={event => setStatus(event.target.value)}><option value="pending">待跟进</option><option value="processing">处理中</option><option value="resolved">已解决</option></select>
     <textarea value={note} onChange={event => setNote(event.target.value)} placeholder="记录处理备注" />
     <div className="detail-actions"><button onClick={save} disabled={saving}>{saving ? '保存中…' : '保存状态'}</button>{selected.session_id && <a className="secondary" href={`/workbench?session_id=${encodeURIComponent(selected.session_id)}`}>返回原始会话</a>}</div>
-  </aside>
+    <button className="modal-close" onClick={onClose} aria-label="关闭">×</button>
+  </div></div>
 }
 
 export function RiskDashboard() {
   const [risks, setRisks] = useState<Risk[]>([])
-  const [filter, setFilter] = useState('all')
+  const [filter, setFilter] = useState<RiskFilter>({})
   const [selected, setSelected] = useState<RiskDetail | null>(null)
   const [status, setStatus] = useState('pending')
   const [note, setNote] = useState('')
   const [error, setError] = useState('')
+  const [loading, setLoading] = useState(true)
   const [loadingDetail, setLoadingDetail] = useState(false)
   const [saving, setSaving] = useState(false)
-  const load = () => getJson<{ items?: Risk[] }>('/api/risks').then(data => setRisks(data.items || [])).catch(() => { setRisks([]); setError('后端暂不可用，未展示风险事件。') })
+  const load = () => getJson<{ items?: Risk[] }>('/api/risks').then(data => { setRisks(data.items || []); setError('') }).catch(() => { setRisks([]); setError('后端暂不可用，未展示风险事件。') }).finally(() => setLoading(false))
   const chooseById = async (riskId: string) => { setLoadingDetail(true); setError(''); try { const detail = await getJson<RiskDetail>(`/api/risks/${encodeURIComponent(riskId)}`); setSelected(detail); setStatus(detail.status || 'pending'); setNote(detail.note || '') } catch { setSelected(null); setError('未找到该风险事件。') } finally { setLoadingDetail(false) } }
   const choose = (risk: Risk) => chooseById(risk.id)
   useEffect(() => {
@@ -49,15 +83,33 @@ export function RiskDashboard() {
     chooseById(queryRiskId)
   }, [])
   const save = async () => { if (!selected) return; setSaving(true); setError(''); try { const updated = await getJson<RiskDetail>(`/api/risks/${encodeURIComponent(selected.id)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status, note }) }); setSelected(updated); setRisks(items => items.map(item => item.id === updated.id ? { ...item, ...updated } : item)); await load() } catch { setError('状态更新失败，请重试。') } finally { setSaving(false) } }
-  const shown = filter === 'all' ? risks : risks.filter(risk => risk.level === filter)
-  const counts = { critical: risks.filter(r => r.level === 'critical').length, high: risks.filter(r => r.level === 'high').length, open: risks.filter(r => ['pending', 'open'].includes(r.status || 'pending')).length }
+  const shown = risks.filter(risk => (!filter.level || risk.level === filter.level) && (!filter.category || risk.category === filter.category) && (!filter.status || normalizedStatus(risk.status) === filter.status) && (!filter.customer || risk.buyer_nickname === filter.customer))
+  const levelCounts = levels.map(level => [level, risks.filter(risk => risk.level === level).length] as [string, number]).filter(([, count]) => count > 0)
+  const categoryCounts = countBy(risks, risk => risk.category || 'other')
+  const statusCounts = countBy(risks, risk => normalizedStatus(risk.status))
+  const topCustomers = countBy(risks.filter(risk => ['high', 'critical'].includes(risk.level) && risk.buyer_nickname), risk => risk.buyer_nickname || '').slice(0, 5)
+  const pending = risks.filter(risk => normalizedStatus(risk.status) === 'pending').length
+  const resolved = risks.filter(risk => normalizedStatus(risk.status) === 'resolved').length
+  const toggleFilter = (name: keyof RiskFilter, value: string) => setFilter(current => ({ ...current, [name]: current[name] === value ? undefined : value }))
+  const closeModal = () => { setSelected(null); setError('') }
+  let offset = 0
 
   return <main className="dashboard"><section className="panel">
-    <div className="panel-title"><div><span className="eyebrow">知妍·洞察</span><h2>风险预警与跟踪中心</h2></div></div>
+    <div className="panel-title"><div><span className="eyebrow">知妍·洞察</span><h2>客户服务风险预警与跟踪中心</h2></div></div>
     {error && <p className="notice">{error}</p>}
-    <div className="risk-metrics"><div><strong>{risks.length}</strong><span>全部事件</span></div><div><strong>{counts.critical}</strong><span>紧急</span></div><div><strong>{counts.high}</strong><span>高危</span></div><div><strong>{counts.open}</strong><span>待跟进</span></div></div>
-    <div className="filters">{['all', 'critical', 'high', 'medium', 'low'].map(level => <button className={filter === level ? 'selected' : ''} onClick={() => setFilter(level)} key={level}>{level === 'all' ? '全部' : riskLevelLabel(level)}</button>)}</div>
-    <div className="risk-list">{shown.map(risk => <React.Fragment key={risk.id}><article className={`risk-row ${selected?.id === risk.id ? 'selected-row' : ''}`} onClick={() => choose(risk)}><span className={`badge ${risk.level}`}>{riskLevelLabel(risk.level)}</span><div><strong>{risk.reason}</strong><p>{risk.buyer_nickname || '客户信息缺失'} · {riskStatusLabel(risk.status || 'pending')} · {risk.recommended_action}</p></div><button className="secondary" onClick={event => { event.stopPropagation(); choose(risk) }}>查看详情</button></article>{selected?.id === risk.id && (loadingDetail ? <div className="inline-detail-loading">正在加载风险详情…</div> : <RiskDetailInline selected={selected} status={status} note={note} saving={saving} setStatus={setStatus} setNote={setNote} save={save} />)}</React.Fragment>)}</div>
-    {!shown.length && <div className="empty">当前没有可展示的真实风险事件。</div>}
+    <div className="risk-metrics"><div><strong>{loading ? '—' : risks.length}</strong><span>风险总数</span></div><div><strong>{loading ? '—' : risks.filter(risk => ['high', 'critical'].includes(risk.level)).length}</strong><span>高风险（含紧急）</span></div><div><strong>{loading ? '—' : pending}</strong><span>待跟进</span></div><div><strong>{loading ? '—' : risks.length ? `${Math.round(resolved / risks.length * 100)}%` : '—'}</strong><span>已解决率 · {resolved} 条</span></div></div>
+    <div className="insight-charts">
+      <ChartCard title="风险等级分布" subtitle="点击环形区或图例筛选列表">{loading ? <div className="chart-empty">正在加载…</div> : !risks.length ? <div className="chart-empty">暂无足够数据</div> : <div className="donut-layout"><svg className="risk-donut" viewBox="0 0 120 120" role="img" aria-label="风险等级分布图"><circle cx="60" cy="60" r="43" fill="none" stroke="#f0edf3" strokeWidth="18" />{levelCounts.map(([level, count]) => { const length = count / risks.length * 270.18; const start = offset; offset += length; return <circle key={level} cx="60" cy="60" r="43" fill="none" stroke={levelColors[level]} strokeWidth="18" strokeDasharray={`${length} ${270.18 - length}`} strokeDashoffset={-start} transform="rotate(-90 60 60)" className={`donut-segment ${filter.level === level ? 'active' : ''}`} onClick={() => toggleFilter('level', level)} aria-label={`${riskLevelLabel(level)} ${count} 条`} /> })}<text x="60" y="58" textAnchor="middle" className="donut-number">{risks.length}</text><text x="60" y="75" textAnchor="middle" className="donut-caption">风险事件</text></svg><div className="donut-legend">{levelCounts.map(([level, count]) => <button key={level} type="button" className={filter.level === level ? 'active' : ''} onClick={() => toggleFilter('level', level)}><i style={{ background: levelColors[level] }} />{riskLevelLabel(level)} <strong>{count}</strong></button>)}</div></div>}</ChartCard>
+      <ChartCard title="主要风险来源" subtitle="按现有规则类别聚合">{loading ? <div className="chart-empty">正在加载…</div> : <BarChart rows={categoryCounts} total={risks.length} label={riskCategoryLabel} color={() => '#8064aa'} onSelect={value => toggleFilter('category', value)} selected={filter.category} />}</ChartCard>
+      <ChartCard title="风险趋势" subtitle="近 14 个有记录日期" wide>{loading ? <div className="chart-empty">正在加载…</div> : <TrendChart risks={risks} />}</ChartCard>
+      <ChartCard title="风险处理进度" subtitle="点击状态筛选待办">{loading ? <div className="chart-empty">正在加载…</div> : <BarChart rows={statusCounts} total={risks.length} label={riskStatusLabel} color={value => statusColors[value] || '#98a2b3'} onSelect={value => toggleFilter('status', value)} selected={filter.status} />}</ChartCard>
+      <ChartCard title="重点风险客户 Top 5" subtitle="按高危及紧急风险事件数排序">{loading ? <div className="chart-empty">正在加载…</div> : <BarChart rows={topCustomers} total={topCustomers[0]?.[1] || 0} label={value => value} color={() => '#bb3e4b'} onSelect={value => toggleFilter('customer', value)} selected={filter.customer} />}</ChartCard>
+    </div>
+    <div className="filters">{[['', '全部'], ['pending', '待跟进'], ['processing', '处理中'], ['resolved', '已解决'], ['ignored', '已忽略']].map(([value, label]) => <button type="button" key={value || 'all'} className={(filter.status || '') === value ? 'selected' : ''} onClick={() => value ? toggleFilter('status', value) : setFilter(current => ({ ...current, status: undefined }))}>{label}</button>)}</div>
+    <div className="risk-list-header"><h3>风险事件列表</h3><span className="list-count">共 {risks.length} 条 · 当前显示 {shown.length} 条</span>{Object.values(filter).some(Boolean) && <button type="button" className="secondary" style={{ marginLeft: 'auto' }} onClick={() => setFilter({})}>清除筛选</button>}</div>
+    <div className="active-filters">{filter.level && <span>等级：{riskLevelLabel(filter.level)}</span>}{filter.category && <span>类型：{riskCategoryLabel(filter.category)}</span>}{filter.customer && <span>客户：{filter.customer}</span>}</div>
+    <div className="risk-list">{shown.map(risk => <article className="risk-row" key={risk.id} onClick={() => choose(risk)}><span className={`badge ${risk.level}`}>{riskLevelLabel(risk.level)}</span><div><strong>{risk.reason}</strong><p>{risk.buyer_nickname || '客户信息缺失'} · {riskStatusLabel(risk.status || 'pending')} · {risk.recommended_action}</p></div><button className="secondary" onClick={event => { event.stopPropagation(); choose(risk) }}>查看详情</button></article>)}</div>
+    {!loading && !shown.length && <div className="empty">{risks.length ? '当前筛选条件下没有风险事件。' : '当前没有可展示的真实风险事件。'}</div>}
+    {selected && (loadingDetail ? <div className="modal-overlay"><div className="modal-loading">正在加载风险详情…</div></div> : <RiskDetailModal selected={selected} status={status} note={note} saving={saving} setStatus={setStatus} setNote={setNote} save={save} onClose={closeModal} />)}
   </section></main>
 }

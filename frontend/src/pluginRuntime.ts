@@ -6,7 +6,7 @@ export type PluginActions = {
   requestHumanTakeover(): void
   openRiskDetail(riskId?: string): void
   executeQuickAction(actionId: string, sessionId: string): Promise<{ message: string; source?: string }>
-  askAgent(message: string, sessionId: string): Promise<{ message: string; source?: string }>
+  askAgent(message: string, sessionId: string, requestId?: string): Promise<{ message: string; source?: string }>
 }
 export type QianniuHostAdapter = { getPluginContext(): PluginContext | null; emit(event: HostEventName): void; onEvent(listener: (event: HostEventName) => void): () => void }
 export class SimulatedQianniuAdapter implements QianniuHostAdapter {
@@ -35,6 +35,7 @@ export const RISK_LEVEL_LABELS: Record<string, string> = {
   low: '低风险',
 }
 export const RISK_STATUS_LABELS: Record<string, string> = {
+  pending: '待跟进',
   open: '待跟进',
   processing: '处理中',
   resolved: '已解决',
@@ -42,8 +43,12 @@ export const RISK_STATUS_LABELS: Record<string, string> = {
 }
 export const RISK_CATEGORY_LABELS: Record<string, string> = {
   safety: '安全',
+  complaint: '投诉升级',
+  after_sales: '售后异常',
   sentiment: '情绪',
   service: '服务',
+  context: '订单关联',
+  other: '其他',
 }
 export const riskLevelLabel = (level: string) => RISK_LEVEL_LABELS[level] || level
 export const riskStatusLabel = (status: string) => RISK_STATUS_LABELS[status] || status
