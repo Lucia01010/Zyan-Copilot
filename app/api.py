@@ -83,6 +83,9 @@ def create_app():
     tools = BusinessTools(DB_PATH)
     context_engine = ContextEngine(DB_PATH)
     knowledge_store = KnowledgeStore(DB_PATH, Path(__file__).resolve().parents[1] / "knowledge")
+    product_source = Path(__file__).resolve().parents[1] / "data/raw/产品功能详情.jsonl"
+    if product_source.exists():
+        knowledge_store.attach_product_catalog(product_source)
     knowledge_store.ensure_index()
     copilot_request_cache: dict[str, dict[str, Any]] = {}
 

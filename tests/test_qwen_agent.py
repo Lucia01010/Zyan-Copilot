@@ -5,12 +5,21 @@ from pathlib import Path
 from unittest.mock import patch
 
 from app.intent_taxonomy import IntentTaxonomy
-from app.qwen_agent import AgentOutput, BeautyAgent, QwenProvider
+from app.qwen_agent import AgentOutput, BeautyAgent, QwenProvider, load_prompt
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 class QwenAgentTests(unittest.TestCase):
+    def test_consumer_reply_prompt_has_scenario_tone_and_evidence_rules(self):
+        prompt = load_prompt("final_synthesis", schema_contract="{schema}")
+        self.assertIn("suggested_reply 是唯一面向消费者", prompt)
+        self.assertIn("合成测试数据", prompt)
+        for phrase in ("物流进度", "退款延迟", "消费者投诉", "使用后不适"):
+            self.assertIn(phrase, prompt)
+        self.assertIn("不得虚构订单状态", prompt)
+        self.assertIn("不良反应要严肃关怀", prompt)
+
     def test_provider_defaults_to_mock_without_credentials(self):
         provider = QwenProvider(mock=True)
         self.assertEqual(provider.provider, "mock")
@@ -94,6 +103,17 @@ class QwenAgentTests(unittest.TestCase):
         self.assertNotEqual(adverse, "感谢您的说明。我已结合订单和历史记录整理了情况，接下来会为您核对并尽快回复。")
         self.assertIn("转账成功", refund)
         self.assertIn("暂停使用", adverse)
+
+    def test_mock_consumer_tone_varies_by_risk_and_does_not_overdo_intimacy(self):
+        daily = QwenProvider._mock_suggested_reply({"recent_messages": [{"message_text": "这款怎么用"}], "orders": [], "work_orders": []}, {"findings": [], "level": "low"})
+        complaint = QwenProvider._mock_suggested_reply({"recent_messages": [{"message_text": "我要投诉，太失望了"}], "orders": [], "work_orders": []}, {"findings": [], "level": "high"})
+        adverse = QwenProvider._mock_suggested_reply({"recent_messages": [{"message_text": "用了之后刺痛"}], "orders": [], "work_orders": [{"source_table": "adverse_reaction_work_orders", "work_order_number": "BL123"}]}, {"findings": [], "level": "critical"})
+        self.assertIn("亲", daily)
+        self.assertIn("很抱歉", complaint)
+        self.assertNotIn("亲", adverse)
+        for reply in (daily, complaint, adverse):
+            self.assertNotIn("宝宝", reply)
+            self.assertNotIn("宝子", reply)
 
     def test_structured_output_parser_accepts_fence_and_prose(self):
         payload = '{"intent":"售后","emotion":"关注","summary":"ok","evidence":[],"risk_level":"low","suggested_reply":"收到"}'

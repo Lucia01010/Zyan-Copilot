@@ -56,11 +56,11 @@ class AgentOutput(BaseModel):
     """Single source of truth for the backwards-compatible agent JSON contract."""
 
     model_config = ConfigDict(extra="forbid")
-    intent: str
-    intent_major: str = Field(default="", max_length=80)
-    intent_minor: str = Field(default="", max_length=120)
-    emotion: str
-    summary: str = Field(max_length=180)
+    intent: str = Field(description="当前诉求，用中文短语表述，例如：售后咨询、退款进度、物流查询")
+    intent_major: str = Field(default="", max_length=80, description="一级意图，中文表述")
+    intent_minor: str = Field(default="", max_length=120, description="二级意图，中文表述")
+    emotion: str = Field(description="客户当前情绪，用中文表述，例如：平稳、焦虑、生气、需关注")
+    summary: str = Field(max_length=180, description="历史对话与状况总结，中文表述")
     evidence: list[Any] = Field(max_length=6)
     risk_level: Literal["low", "medium", "high", "critical"]
     recommended_actions: list[str] = Field(default_factory=list, max_length=5)
@@ -197,7 +197,7 @@ class QwenProvider:
             detail = f"我已查到不良反应工单 {number}。" if number else "我已查到相关不良反应工单。"
             if symptom:
                 detail += f"记录的情况是：{symptom}。"
-            return detail + "先请您暂停使用并留意身体情况，我会马上转人工专员核实后续处理；如症状严重，请及时就医。"
+            return detail + "看到您不舒服我很重视，先请暂停使用并留意症状；如持续或加重，请及时就医。我会马上转人工核实后续处理。"
 
         refund = next((item for item in work_orders if item.get("refund_issue_type") or item.get("transfer_status") or item.get("refund_amount_yuan")), None)
         if refund or "退款" in text or "退钱" in text:
@@ -205,8 +205,8 @@ class QwenProvider:
                 status = refund.get("transfer_status") or refund.get("work_order_status") or "待核实"
                 amount = refund.get("refund_amount_yuan")
                 amount_text = f"金额为 {amount} 元，" if amount else ""
-                return f"我已查到您的退款记录，{amount_text}当前状态为“{status}”。我会继续帮您核对到账进度；如果页面状态与实际到账不一致，我会为您转人工跟进。"
-            return "我会帮您进一步核实退款状态和到账记录，确认后给您明确回复，不先做无法保证的到账承诺。"
+                return f"我帮您查到退款记录了，{amount_text}当前状态是“{status}”。到账时间暂时没有可确认的信息，我会继续帮您跟进，页面和实际情况不一致时再转人工核对。"
+            return "我理解您一直等退款会着急。我先帮您核实退款状态和到账记录，确认后给您明确回复，暂时不做无法保证的到账承诺。"
 
         logistics = next((item for item in work_orders if item.get("carrier") or item.get("problem_tracking_number") or item.get("issue_type")), None)
         order = orders[0] if orders else None
@@ -215,8 +215,8 @@ class QwenProvider:
             if tracking:
                 carrier = (logistics or {}).get("carrier") or "物流"
                 status = (logistics or {}).get("work_order_status") or (logistics or {}).get("resolution") or "查询中"
-                return f"我已查到{carrier}单号 {tracking}，当前记录为“{status}”。我会继续帮您核对最新物流节点，并在有更新后及时回复。"
-            return "我会帮您进一步核实物流单号和最新节点，确认后再给您明确的处理时间。"
+                return f"我帮您看过啦，{carrier}单号是 {tracking}，当前记录为“{status}”。我会继续留意最新物流节点，有更新再及时告诉您。"
+            return "我先帮您核实物流单号和最新节点，确认后再回复您，暂时不承诺具体送达时间。"
 
         if order and (order.get("gift") or "赠品" in text):
             gift = order.get("gift") or "赠品信息待核实"
@@ -225,7 +225,11 @@ class QwenProvider:
             action = findings[0].get("recommended_action")
             if action:
                 return f"我已结合当前会话和业务记录为您核对。{action}我会继续跟进并向您反馈明确结果。"
-        return "我会帮您进一步核实相关订单、历史对话和售后记录，确认事实后再给您明确回复。"
+        if any(term in text for term in ("投诉", "不满意", "生气", "失望")):
+            return "很抱歉这次体验让您不满意。我会结合当前订单、历史沟通和售后记录继续核实，确认处理方案后给您明确回复。"
+        if any(term in text for term in ("怎么用", "如何使用", "用法", "功效", "适合")):
+            return "亲，我先按现有产品资料帮您核对用法和适用信息；如果您愿意，也可以告诉我肤质和主要需求，我再帮您看看是否匹配哦。"
+        return "我会帮您进一步核实相关订单、历史沟通和售后记录，确认事实后再给您明确回复。"
 
     def run(self, request_context: dict[str, Any], baseline_risk: dict[str, Any], executor: dict[str, Callable[..., Any]]) -> tuple[Any, ...]:
         if self.mock:
@@ -310,7 +314,12 @@ class QwenProvider:
         valid = self._validate_output(final_output)
         if not valid:
             errors.append("structured_output_invalid")
-        suggestion = str(final_output.get("suggested_reply", "missing information"))
+        suggestion = str(final_output.get("suggested_reply", "missing information")).strip()
+        if not suggestion:
+            # 模型偶发返回空 suggested_reply（键存在但值为空串），直接透传会导致
+            # 前端建议回复区静默缺失，这里用诚实兜底文案占位。
+            suggestion = "已核对当前会话记录。建议先与客户确认订单和售后工单的关键信息，再按已核实结果回复；涉及承诺事项请以工单记录为准跟进。"
+            errors.append("empty_suggested_reply_fallback")
         return suggestion, "qwen", prompt_tokens, completion_tokens, called, valid, final_output, errors, usage_records, finish_reason, raw_final_content, repair_used
 
     @staticmethod

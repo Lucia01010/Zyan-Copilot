@@ -120,6 +120,7 @@ class KnowledgeStore:
         self.db_path = str(db_path)
         self.knowledge_dir = Path(knowledge_dir)
         self.loader = KnowledgeLoader()
+        self.product_catalog = None
         self.retriever = KnowledgeRetriever(self._recall_candidates)
         self._ensure_tables()
 
@@ -251,7 +252,19 @@ class KnowledgeStore:
         return self.retriever.retrieve(query, top_k=top_k, domain=domain, score_threshold=score_threshold)["chunks"]
 
     def search_dicts(self, query: str, top_k: int = 3, domain: str | None = None) -> list[dict[str, Any]]:
+        if self.product_catalog is not None and domain in (None, "product_catalog"):
+            products = self.product_catalog.search(query, top_k)
+            if products is not None:
+                return products
         return [chunk.as_dict() for chunk in self.search(query, top_k=top_k, domain=domain)]
+
+    def attach_product_catalog(self, source: Path) -> dict[str, Any]:
+        from app.product_knowledge import ProductKnowledge
+
+        catalog = ProductKnowledge(self.db_path)
+        summary = catalog.ingest(source)
+        self.product_catalog = catalog
+        return summary
 
 
 _DEFAULT_STORE: KnowledgeStore | None = None
@@ -264,4 +277,7 @@ def get_default_store() -> KnowledgeStore:
         root = Path(__file__).resolve().parents[1]
         _DEFAULT_STORE = KnowledgeStore(root / "data/beauty_cs_agent.sqlite3", root / "knowledge")
         _DEFAULT_STORE.ensure_index()
+        source = root / "data/raw/产品功能详情.jsonl"
+        if source.exists():
+            _DEFAULT_STORE.attach_product_catalog(source)
     return _DEFAULT_STORE

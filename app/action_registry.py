@@ -341,7 +341,7 @@ def classify_copilot_intent(text: str) -> str:
         return "business_query"
     if ORDER_NUMBER_PATTERN.search(normalized) or any(term in normalized for term in STATUS_QUERY_TERMS):
         return "business_query"
-    if any(term in normalized for term in KNOWLEDGE_TERMS):
+    if any(term in normalized for term in KNOWLEDGE_TERMS + ("推荐", "选品", "买什么", "选什么", "敏感肌", "干皮", "油皮")):
         return "knowledge_query"
     if any(term in normalized for term in _BUSINESS_TERMS):
         return "business_query"

@@ -4,6 +4,18 @@
 
 M5 PASS（MANUAL_BROWSER_ACCEPTANCE）；M6 PASS；M7 PARTIAL — live Agent pipeline verified, one risk-consistency issue remains；M8 小规模 Hybrid live evaluation 已完成；M9 Product / Demo Polish PASS；M10 Competition Demo Packaging PASS。真实千牛接入改为 M11 Optional，不是比赛完成前提。
 
+## 故障修复记录
+
+- 风险详情面板与按钮排版优化（2026-10-18）：按用户要求多项调整。风险详情弹窗（RiskDashboard.tsx RiskDetailModal）：①删除 meta 第一格"风险事件 {id}"，meta 三列（客户/会话/风险类型）；②"风险原因"标题旁删除"识别依据"；③弹窗内订单行与轨迹行的"·"分隔符删除；④风险原因框去橙色填充（#fffaf5/#f7e5cc → #faf7fc/#eee5f2）；⑤关键依据 key 英文转中文（EVIDENCE_LABELS：work_order_numbers→工单号等，12315→中文全称），evidence-row b 加 white-space:nowrap 消除号码与文字重合；⑥弹窗内除 h2/h3 小标题外 b/strong 全部 font-weight:400（含 facts/detail-context/timeline/evidence 内更具体的 b 规则覆盖）；⑦服务轨迹去掉 slice(-8) 截断改为全量显示 + "N 条记录"计数 + max-height 280px 内部滚动（修复外层 .timeline overflow:hidden 覆盖问题）；⑧"返回原始会话"链接改为与"保存状态"按钮一致的深紫底白字圆角样式。列表页：`清除筛选`/`查看详情` 按钮字号 13px、padding 6px 10px。工作台：`.chat-inline-actions .quick-action` padding 5px 10px，与"复制到回复框"按钮等高（实测均 29px）。验证：typecheck+build 通过（index-CWuTxgEZ.js）；浏览器实测 metaLabels=["客户","会话","风险类型"]、reasonBg=rgb(250,247,252)、evidenceKeys=["工单号"]、b/strong 全 400、timeline overflow auto 可滚动、无" · "残留、双按钮样式一致、按钮字号 13px、行动/复制按钮等高，全部通过。
+
+- 工作台/风险面板 UI 细节调整（2026-10-18）：按用户要求 5 项调整。①千牛对话区买家气泡去掉 1px 边框（styles.css `.customer` 移除 border）；②回复编辑器"发送"键移入编辑框内右下角（main_m11.tsx 用 `.reply-editor` 包裹 textarea+`.reply-send` absolute 定位，文案由"发送给消费者"改为"发送"，删除框外独立按钮）；③风险面板"主要风险来源"删除副标题"按现有规则类别聚合"（ChartCard 的 subtitle 改为可选）；④风险趋势图删除说明文字"趋势基于风险识别时间或关联服务记录时间统计"，新增纵坐标（Y 轴线 + 5 档刻度数字 `.trend-axis` + 横向网格线）；⑤知妍 Agent 对话框消息区滚动条弱化（5px 宽浅紫色 webkit/firefox 样式）。修复过程中发现并纠正一次回归：修改 ChartCard subtitle 可选化时误删 `{children}`，导致风险页所有图表容器不渲染（趋势/饼图/柱状图全部消失），已补回并重建。验证：typecheck+build 通过（bundle index-DkFBhR_Z.js）；浏览器实测 workbench（气泡无边框、发送键框内右下角 12px、滚动条规则生效、对话框 3 条消息与复制到回复框正常）与 risk-dashboard（趋势 SVG 渲染、纵坐标 0/2.8/5.5/8.3/11 可见、12 个日期标签、饼图柱状图恢复、两处旧文案均已消失）全部通过。
+
+- 对话框整合建议行动/建议回复 + 气泡操作图标（2026-10-18）：用户要求"建议行动/建议回复（含复制到回复框）"移入知妍 Agent 对话框，并参考 Trae 为客服侧气泡加复制/编辑图标、知妍侧气泡加复制/重试/喜欢/不喜欢图标。改动：`frontend/src/BeautyCopilotPlugin.tsx` 重构 ChatLine（id/kind: chat|summary|actions|suggestion|action-result|error），分析完成后在对话框依次追加会话小结、快捷行动按钮组、建议回复气泡（带"复制到回复框"按钮与 AI生成 标签）；删除底部"建议行动/建议回复"独立区块；气泡下 msg-actions 图标行 hover 显示，客服侧复制/编辑（编辑回填输入框），知妍侧复制（点击后短暂变勾）/重试（小结与建议回复→重跑分析，问答→重发原话，行动结果→重执行该行动）/喜欢/不喜欢（互斥高亮，前端视觉状态）；`frontend/src/styles.css` 新增 msg-actions/msg-action-btn/chat-inline-actions/chat-insert-btn/chat-loading 样式。修复伴随发现的后端缺陷：`app/qwen_agent.py` run() 中 `suggested_reply` 为空字符串时（LLM 偶发返回空值，`dict.get` 默认值仅对键缺失生效）静默透传，导致前端建议回复气泡随机缺失；现加诚实兜底文案并记录 `empty_suggested_reply_fallback`。验证：typecheck+build 通过；173 项测试通过；服务重启（provider=qwen）；浏览器实测 3 条消息齐全、复制到回复框写入编辑器、赞踩互斥高亮、编辑回填输入框、hover 图标可见。已知限制：喜欢/不喜欢为前端视觉状态未持久化（现有 /api/copilot/feedback 是"修改建议"语义，不适用）。
+
+- 客户洞察中文化 + 状况总结迁移（2026-10-18）：用户要求"当前诉求/情绪/风险"统一中文表述，且"历史对话与状况总结"不在客户洞察板块显示、改为在知妍 Agent 对话框输出。改动：`app/qwen_agent.py` AgentOutput 为 intent/intent_major/intent_minor/emotion/summary 增加中文 description（随 strict json_schema 下发，约束 live LLM 输出中文）；`frontend/src/pluginRuntime.ts` 新增 EMOTION_LABELS/INTENT_LABELS 及 emotionLabel/intentLabel 兜底映射（常见英文值转中文）；`frontend/src/BeautyCopilotPlugin.tsx` 洞察三项套用映射、移除 summary 段落，新增 effect 在分析完成后向知妍对话框追加"会话小结：{summary}"气泡（按 session+summary 去重）。验证：`npm run typecheck` + `vite build` 通过；`python -m pytest tests -q` 173 项通过；live smoke（S00082）返回 intent="不良反应咨询与退货确认"、emotion="平稳"、中文 summary，live_debug 确认 schema 描述已下发；浏览器实测洞察三字段全中文、洞察区无总结段落、对话框出现"会话小结"气泡。服务经 `scripts/run_service.cmd` 重启于 9000（provider=qwen）。
+
+- 修复闲聊/自由问答退化（2026-10-18）：用户实测 "hello" 只得到 UNKNOWN_REPLY 兜底。根因是 `scripts/run_service.cmd` 硬编码 `AGENT_PROVIDER=mock`，启动时覆盖 `.env` 的 `qwen` 配置（config.load_env 只注入环境中不存在的键），导致 LLM 永不参与 copilot chat。修复：run_service.cmd 移除硬编码，运行模式完全由 `.env` 决定（未配置时 Python 侧 QwenProvider 默认回退 mock）；`response_generator.py` LLM 调用失败由静默吞异常改为 logging.warning；`agent_brain.py` 工具/RAG 无结果的两处兜底改为先尝试 `_free_reply`（LLM 人性化引导，grounding_check 仍拦截无依据业务事实；mock 模式行为不变）。验证：9000 服务 health 显示 provider=qwen；hello 返回自然问候；通用技术问题（构建 agent 知识图谱）得到诚实说明+场景引导；业务订单查询正常。173 项测试全部通过。
+
 ## 已完成
 
 - 创建仓库级 `AGENTS.md`。
@@ -67,6 +79,28 @@ M5 PASS（MANUAL_BROWSER_ACCEPTANCE）；M6 PASS；M7 PARTIAL — live Agent pip
 - M6：`scripts/smoke_risk_api.py` 返回 `status_persistence: ok`；前端 `npm run typecheck` 与 `npm run build` 通过。未声称本轮执行风险看板浏览器 click-through。
 - M7：`scripts/evaluate_mvp.py` 评估 112 个客户，42 个风险发现，Tool 成功率 100%，mock 输入/输出 token 为 705,633/2,760；`python -m unittest discover -s tests -v` 修复后通过 7 个测试。
 - 真实 Qwen 回归命令在无凭据时明确返回阻塞信息（退出码 2，未发起网络请求）；未执行四场景 live test。离线编译与 `python -m unittest discover -s tests -v`：9 个测试通过。
+
+## 2026-10-18 产品知识图谱接入
+
+- 新增 `app/product_knowledge.py`：将只读 `data/raw/产品功能详情.jsonl` 解析为产品实体和关系（功效、适用部位、适用人群、功效宣称），写入独立 `product_knowledge` / `product_relations` 表；整文件 SHA-256 校验后原子替换，重复导入幂等。
+- 产品查询已接入现有知识工具：支持指定产品/品牌及“推荐/选品”请求，返回使用方法、注意事项、成分、保存/保质期和可追溯来源（源文件、行号、哈希）。缺少明确依据时返回待确认，不编造替代产品。通用使用方法仍走原有 Markdown RAG。
+- 肤质适配仅采信备案资料明确的适用人群/宣称；功效测试受试者肤质不等于适用肤质；存在注销日期的记录不用于推荐。
+- 验证：`python -m unittest discover -s tests -q`，171/171 PASS；新增 `tests/test_product_knowledge.py` 覆盖幂等、来源追溯和未知品牌不推荐。
+- 已知限制：JSONL 是备案/功效资料，不等于实时在售库存、价格或完整商品目录；推荐前仍需核对店铺当前在售版本。
+
+## 2026-10-18 建议回复语气优化
+
+- `app/prompts/final_synthesis.txt` 明确区分消费者可直接发送的 `suggested_reply` 与内部字段/知妍-客服对话：先回应最新关切，再引用真实上下文和工具证据，按日常咨询、物流、退款、投诉、不良反应区分语气。
+- 增加少量合成测试示例并标明“合成测试数据”；禁止宝宝/宝子、表情符号、无证据承诺和机械堆砌语气词。退款纠纷与不良反应保持克制，产品资料不足时说明边界。
+- 离线 mock 回复同步调整为消费者可发送话术，保留事实 grounding；内部 `response_generator.py` 的 Agent 对话提示未套用该消费者语气。
+- 真实源会话对照命令：`python scripts/evaluate_suggested_reply_tone.py`，覆盖 5 类会话，输出 `data/generated/evaluation/suggested_reply_tone.json`；本轮 5/5 场景检查通过（无宝宝/宝子、无虚假承诺、≤300 字）。
+- 验证：`python -m unittest tests.test_qwen_agent -q`，20/20 PASS；完整测试需与产品知识接入回归一起执行。
+
+## 2026-10-18 风险详情界面视觉优化
+
+- `frontend/src/RiskDashboard.tsx` 将风险详情弹窗重排为状态头部、事件信息、风险原因、关键依据、订单/工单、服务轨迹和处理动作六个区块；保留风险状态更新、备注保存和返回原始会话功能。
+- `frontend/src/styles.css` 为详情页建立独立紧凑字号体系：除“风险详情”主标题外，正文、字段、按钮和辅助信息统一 13px/12px；采用低饱和灰白表面、细边框、轻分隔线和移动端两列适配，降低视觉噪声并便于快速扫描。
+- 验证：`cd frontend && npm run typecheck` 通过；`cd frontend && npm run build` 通过。未改变后端接口或风险数据逻辑。
 
 ## 已知限制
 

@@ -171,14 +171,14 @@ def process_message(
     if not plan["steps"]:
         stage = derive_stage(intent, [])
         state_machine.transition(session_id, stage, intent, [])
-        return {"intent": intent, "message": UNKNOWN_REPLY, "tools_used": [], "evidence": [], "results": [], "context_used": context_used, "memory_used": memory_used, "plan_mode": plan["mode"], "plan": [], "state": {"stage": stage, "follow_up": bool(follow_up_action)}, "grounding": {"grounded": True, "checked_facts": [], "ungrounded_facts": [], "evidence_count": 0}}
+        return {"intent": intent, "message": _free_reply(UNKNOWN_REPLY), "tools_used": [], "evidence": [], "results": [], "context_used": context_used, "memory_used": memory_used, "plan_mode": plan["mode"], "plan": [], "state": {"stage": stage, "follow_up": bool(follow_up_action)}, "grounding": {"grounded": True, "checked_facts": [], "ungrounded_facts": [], "evidence_count": 0}}
 
     # 4/5. Action Selection → Tool/RAG（M14 Router + M15/M17/M18 RAG）
     route = run_plan(tools, session_id, plan, message=text, store=knowledge_store)
     if not route["results"]:
         stage = derive_stage(intent, [])
         state_machine.transition(session_id, stage, intent, [])
-        return {"intent": intent, "message": UNKNOWN_REPLY, "tools_used": [], "evidence": [], "results": [], "context_used": context_used, "memory_used": memory_used, "plan_mode": plan["mode"], "plan": plan["steps"], "state": {"stage": stage, "follow_up": bool(follow_up_action)}, "grounding": {"grounded": True, "checked_facts": [], "ungrounded_facts": [], "evidence_count": 0}}
+        return {"intent": intent, "message": _free_reply(UNKNOWN_REPLY), "tools_used": [], "evidence": [], "results": [], "context_used": context_used, "memory_used": memory_used, "plan_mode": plan["mode"], "plan": plan["steps"], "state": {"stage": stage, "follow_up": bool(follow_up_action)}, "grounding": {"grounded": True, "checked_facts": [], "ungrounded_facts": [], "evidence_count": 0}}
 
     # 6. Response Generation：live 模式优先 LLM 基于证据人性化组织语言
     reply = route["message"]

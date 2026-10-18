@@ -53,3 +53,40 @@ export const RISK_CATEGORY_LABELS: Record<string, string> = {
 export const riskLevelLabel = (level: string) => RISK_LEVEL_LABELS[level] || level
 export const riskStatusLabel = (status: string) => RISK_STATUS_LABELS[status] || status
 export const riskCategoryLabel = (category: string) => RISK_CATEGORY_LABELS[(category || '').toLowerCase()] || category
+
+export const EMOTION_LABELS: Record<string, string> = {
+  angry: '生气',
+  upset: '生气',
+  frustrated: '不满',
+  anxious: '焦虑',
+  nervous: '焦虑',
+  worried: '担忧',
+  urgent: '急切',
+  impatient: '不耐烦',
+  disappointed: '失望',
+  confused: '困惑',
+  calm: '平稳',
+  neutral: '平稳',
+  satisfied: '满意',
+  positive: '积极',
+  negative: '负面',
+}
+export const emotionLabel = (value: string) => EMOTION_LABELS[value.trim().toLowerCase()] || value
+
+export const INTENT_LABELS: Record<string, string> = {
+  refund: '退款售后',
+  logistics: '物流查询',
+  shipping: '物流查询',
+  delivery: '物流查询',
+  complaint: '投诉',
+  inquiry: '产品咨询',
+  consultation: '产品咨询',
+  after_sales: '售后咨询',
+  aftersales: '售后咨询',
+  after_sale: '售后咨询',
+  order: '订单查询',
+  usage: '产品使用',
+  praise: '表扬',
+  other: '其他咨询',
+}
+export const intentLabel = (value: string) => INTENT_LABELS[value.trim().toLowerCase()] || value

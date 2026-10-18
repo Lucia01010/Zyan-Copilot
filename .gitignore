@@ -53,6 +53,11 @@ data/generated/evaluation/
 output/
 _scratch_*
 
+# Competition materials and derived data (do not push)
+/欧莱雅黑客松/
+data/raw/
+!data/raw/.gitkeep
+
 # External reference materials and local documents
 /docs/*.pdf
 /*.docx
