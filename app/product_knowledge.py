@@ -88,8 +88,10 @@ class ProductKnowledge:
         skin = [x for x in ("敏感", "干性", "油性", "混合性") if x in query]
         recommendation = any(x in query for x in ("推荐", "选品", "买什么", "选什么", "适合", "适用"))
         # Keep broad how-to questions on the curated policy RAG; use the catalog
-        # for a named product or an explicit selection/recommendation request.
-        if not (exact or brands or recommendation):
+        # for a named product, an explicit selection/recommendation request,
+        # or a known product category (精华/面膜 etc.) — the caller's query
+        # may be implicit ("这款精华") but the category pinpoints the domain.
+        if not (exact or brands or recommendation or categories):
             return None  # Generic policy RAG remains available.
         ranked = []
         for p in exact or products:

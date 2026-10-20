@@ -99,3 +99,24 @@
 .agent-chat-messages::-webkit-scrollbar-thumb:hover{background:#dbcee5}
 .agent-chat-messages::-webkit-scrollbar-track{background:transparent}
 @media(max-width:640px){.risk-detail-modal{padding:20px;border-radius:16px}.risk-detail-meta{grid-template-columns:repeat(2,minmax(0,1fr))}.risk-detail-modal .evidence-row,.risk-detail-modal .detail-context>div{grid-template-columns:92px minmax(0,1fr)}.modal-overlay{padding:12px}}
+.insight-grid>div{text-align:center}
+.dashboard{max-width:none}
+.dashboard{margin:0;padding:0}
+.dashboard .panel{border-radius:0;border:0;box-shadow:none;padding:20px 24px}
+.trend-wrap{max-width:none}
+.donut-layout{max-width:none;margin:0}
+.chart-bars{max-width:none}
+@media(min-width:1001px){.panel.plugin{display:flex;flex-direction:column}.panel.plugin .agent-chat{flex:1 1 auto;min-height:280px;max-height:none}}
+.agent-heading{display:flex;align-items:center;justify-content:space-between}
+.fs-toggle{display:flex;align-items:center;justify-content:center;width:26px;height:26px;padding:0;border-radius:8px;background:transparent;color:#98a2b3;font-weight:400;flex-shrink:0}
+.fs-toggle:hover{background:#f1eaf5;color:#6941c6}
+.plugin-fullscreen .insight-title,.plugin-fullscreen .order-title,.plugin-fullscreen .insight-grid,.plugin-fullscreen .plugin-order-product,.plugin-fullscreen .risk-compact{display:none}
+.panel.plugin.plugin-fullscreen{position:relative;min-height:calc(100vh - 150px);display:flex;flex-direction:column;border-radius:0}
+.panel.plugin.plugin-fullscreen .panel-title{margin-bottom:0}
+.panel.plugin.plugin-fullscreen .agent-heading{position:absolute;top:14px;right:20px;margin:0;padding:0;justify-content:flex-end}
+.panel.plugin.plugin-fullscreen .agent-heading h3{display:none}
+.panel.plugin.plugin-fullscreen .agent-chat{flex:1 1 auto;min-height:0;max-height:none;margin-top:0}
+.risk-reason-section ul{list-style:none;padding-left:0;margin:0}
+.chat-attachment-img{display:block;max-width:220px;max-height:160px;border-radius:8px}
+.chat-attachment-file{display:inline-block;max-width:100%;color:#6941c6;font-size:13px;text-decoration:underline;word-break:break-all}
+.agent-chat-line.operator .chat-attachment-file{color:#efe3fb}

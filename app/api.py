@@ -1,10 +1,12 @@
 """FastAPI application for the M3 service boundary."""
 from __future__ import annotations
 
+import base64
 import os
 import sqlite3
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from app.qwen_agent import BeautyAgent
 from app.business_tools import BusinessTools
@@ -18,7 +20,7 @@ from app.risk_engine import assess_context
 from app.task_state import get_task, list_tasks
 
 try:
-    from fastapi import FastAPI, HTTPException
+    from fastapi import FastAPI, File, HTTPException, UploadFile
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import FileResponse
     from pydantic import BaseModel
@@ -30,6 +32,29 @@ load_env()  # 配置外置化：读取任何配置前先加载仓库根目录 .e
 
 DB_PATH = Path(os.getenv("BEAUTY_DB_PATH", "data/beauty_cs_agent.sqlite3"))
 FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+ATTACHMENT_DIR = Path(os.getenv("BEAUTY_ATTACHMENT_DIR", "data/generated/attachments"))
+ATTACHMENT_MAX_BYTES = int(os.getenv("BEAUTY_ATTACHMENT_MAX_BYTES", str(10 * 1024 * 1024)))
+# 视觉模型单图上限：base64 编码后体积膨胀，过大的图会被跳过而不阻断本轮回复
+ATTACHMENT_IMAGE_MAX_BYTES = int(os.getenv("BEAUTY_ATTACHMENT_IMAGE_MAX_BYTES", str(4 * 1024 * 1024)))
+
+
+def attachment_image_part(attachment_id: str) -> dict[str, Any] | None:
+    """把已上传的图片附件转成视觉模型可用的 image_url 内容块（base64 data URL）。
+
+    仅接受已知图片后缀且未超限的文件，路径同样约束在附件目录内；不满足条件返回 None，
+    由调用方跳过——单张图不可用不应阻断本轮文字回复。
+    """
+    root = ATTACHMENT_DIR.resolve()
+    path = (root / Path(attachment_id).name).resolve()
+    if root not in path.parents or not path.is_file():
+        return None
+    mime = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif"}.get(path.suffix.lower())
+    if not mime:
+        return None
+    raw = path.read_bytes()
+    if not raw or len(raw) > ATTACHMENT_IMAGE_MAX_BYTES:
+        return None
+    return {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"}}
 
 
 class SuggestRequest(BaseModel if FastAPI else object):
@@ -46,6 +71,8 @@ class CopilotChatRequest(BaseModel if FastAPI else object):
     session_id: str
     message: str
     request_id: str | None = None
+    # 图片识别（多模态）：本轮携带的图片附件 id 列表，由前端上传后回传
+    attachment_ids: list[str] = []
 
 
 class CopilotFeedbackRequest(BaseModel if FastAPI else object):
@@ -92,6 +119,30 @@ def create_app():
     def ensure_tracking_table() -> None:
         with sqlite3.connect(DB_PATH) as conn:
             conn.execute("CREATE TABLE IF NOT EXISTS risk_tracking (risk_id TEXT PRIMARY KEY, status TEXT NOT NULL, note TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)")
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS copilot_chat_history ("
+                "id TEXT PRIMARY KEY, session_id TEXT NOT NULL, role TEXT NOT NULL, text TEXT NOT NULL, "
+                "kind TEXT NOT NULL DEFAULT 'chat', attachment_id TEXT, intent TEXT NOT NULL DEFAULT '', "
+                "created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)"
+            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_cch_session ON copilot_chat_history(session_id, created_at)")
+            conn.commit()
+
+    def _persist_chat_lines(session_id: str, user_msg: str, agent_reply: str, intent: str, attachment_ids: list[str] | None = None) -> None:
+        """把本轮 copilot 交互的 user + agent 两条记录落库，刷新/重进会话时可恢复。"""
+        ensure_tracking_table()
+        attachment_id = (attachment_ids or [None])[0] if attachment_ids else None
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO copilot_chat_history(id, session_id, role, text, kind, attachment_id, intent) "
+                "VALUES (?, ?, '客服', ?, 'chat', ?, '')",
+                (f"{session_id}_user_{uuid4().hex}", session_id, user_msg, attachment_id),
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO copilot_chat_history(id, session_id, role, text, kind, intent) "
+                "VALUES (?, ?, '知妍', ?, 'chat', ?)",
+                (f"{session_id}_agent_{uuid4().hex}", session_id, agent_reply, intent),
+            )
             conn.commit()
 
     def risk_events() -> list[dict[str, Any]]:
@@ -190,6 +241,39 @@ def create_app():
         context = tools.get_customer_context(buyer) if buyer else {"orders": [], "work_orders": [], "messages": messages}
         return {"conversation_id": conversation_id, "buyer_nickname": buyer, "messages": messages, "orders": context["orders"], "work_orders": context["work_orders"]}
 
+    @app.post("/api/workbench/attachments")
+    async def upload_attachment(file: UploadFile = File(...)) -> dict[str, Any]:
+        """知妍对话框附件真实上传：落盘到本地附件目录并返回可访问元数据。"""
+        raw = await file.read()
+        if not raw:
+            raise HTTPException(status_code=400, detail="附件为空，请重新选择文件。")
+        if len(raw) > ATTACHMENT_MAX_BYTES:
+            raise HTTPException(status_code=413, detail=f"附件超过 {ATTACHMENT_MAX_BYTES // (1024 * 1024)}MB 上限。")
+        original = Path(file.filename or "attachment").name
+        suffix = Path(original).suffix.lower()[:16]
+        stored = f"{uuid4().hex}{suffix}"
+        ATTACHMENT_DIR.mkdir(parents=True, exist_ok=True)
+        (ATTACHMENT_DIR / stored).write_bytes(raw)
+        content_type = file.content_type or "application/octet-stream"
+        return {
+            "id": stored,
+            "name": original,
+            "size": len(raw),
+            "content_type": content_type,
+            "kind": "image" if content_type.startswith("image/") else "file",
+            "url": f"/api/workbench/attachments/{stored}",
+        }
+
+    @app.get("/api/workbench/attachments/{attachment_id}")
+    def download_attachment(attachment_id: str) -> FileResponse:
+        """按 id 读取已上传附件；对路径做约束，避免目录穿越。"""
+        safe = Path(attachment_id).name
+        root = ATTACHMENT_DIR.resolve()
+        path = (root / safe).resolve()
+        if root not in path.parents or not path.is_file():
+            raise HTTPException(status_code=404, detail="attachment not found")
+        return FileResponse(path)
+
     @app.get("/api/workbench/{session_id}/actions")
     def workbench_actions(session_id: str) -> dict[str, Any]:
         if not tools.get_conversation(session_id):
@@ -216,7 +300,11 @@ def create_app():
             return copilot_request_cache[request.request_id]
         if not tools.get_conversation(request.session_id):
             raise HTTPException(status_code=404, detail="session not found")
-        response = {"request_id": request.request_id, "session_id": request.session_id, **process_message(tools, request.session_id, text, knowledge_store=knowledge_store, context_engine=context_engine, llm_provider=agent.provider)}
+        # 图片识别（多模态）：本轮携带的图片附件转视觉内容块，最多 3 张，不可用的自动跳过
+        image_parts = [part for part in (attachment_image_part(item) for item in (request.attachment_ids or [])[:3]) if part]
+        response = {"request_id": request.request_id, "session_id": request.session_id, **process_message(tools, request.session_id, text, knowledge_store=knowledge_store, context_engine=context_engine, llm_provider=agent.provider, images=image_parts)}
+        # 历史持久化：成功处理后把 user + agent 两条落库，刷新/重进会话可恢复
+        _persist_chat_lines(request.session_id, text, response.get("message", ""), response.get("intent", ""), request.attachment_ids)
         if request.request_id:
             copilot_request_cache[request.request_id] = response
             if len(copilot_request_cache) > 256:
@@ -233,6 +321,21 @@ def create_app():
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
         return {"feedback_id": feedback_id, "conversation_id": request.conversation_id, "recorded": True}
+
+    @app.get("/api/copilot/chat/history")
+    def copilot_history(session_id: str, limit: int = 50) -> dict[str, Any]:
+        """返回指定会话的 copilot 交互历史（user + agent 消息对），按时间升序。"""
+        ensure_tracking_table()
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT role, text, kind, attachment_id, intent, created_at "
+                "FROM copilot_chat_history WHERE session_id = ? ORDER BY created_at ASC LIMIT ?",
+                (session_id, max(1, min(limit, 200))),
+            ).fetchall()
+        items = [{"role": r["role"], "text": r["text"], "kind": r["kind"],
+                  "attachment_id": r["attachment_id"], "intent": r["intent"], "created_at": r["created_at"]} for r in rows]
+        return {"session_id": session_id, "items": items, "total": len(items)}
 
     @app.get("/api/knowledge/search")
     def knowledge_search(q: str, top_k: int = 3) -> dict[str, Any]:

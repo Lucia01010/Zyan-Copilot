@@ -169,9 +169,10 @@ class QwenAgentTests(unittest.TestCase):
         self.assertEqual(payload["model"], provider.model)
         self.assertEqual(payload["response_format"]["type"], "json_schema")
         self.assertTrue(payload["response_format"]["json_schema"]["strict"])
-        self.assertEqual(payload["tools"], [])
-        self.assertEqual(payload["tool_choice"], "none")
-        self.assertFalse(payload["enable_thinking"])
+        # DashScope 不接受 tools=[] 空数组，tools 为空时完全省略
+        self.assertNotIn("tools", payload)
+        self.assertNotIn("tool_choice", payload)
+        self.assertNotIn("enable_thinking", payload)
         self.assertFalse(payload["stream"])
         self.assertNotIn("test-only", json.dumps(payload))
 

@@ -325,19 +325,30 @@ _BUSINESS_TERMS = tuple(term for _, terms in BUSINESS_ROUTES for term in terms)
 _RISK_LABELS = {"low": "低", "medium": "中", "high": "高", "critical": "紧急"}
 
 
+# 知识-成分语境信号：出现这些词说明在问产品属性，即使同时有"过敏"也是知识查询而非业务事件
+_PRODUCT_KNOWLEDGE_SIGNALS = ("成分", "配方", "致敏", "过敏原", "会不会过敏", "可能过敏", "会不会刺激", "禁忌", "不能用")
+
+
 def classify_copilot_intent(text: str) -> str:
     """规则化意图分类：能力咨询 / 业务查询 / 知识查询 / 风险询问 / 无法识别。
 
-    M15 优先级：能力咨询 → 具体业务事实（不良反应事件/订单号/状态查询）
-    → 通用知识 → 一般业务 → 风险 → 未知。业务事实一律走 Business Tool，
-    RAG 只回答通用产品知识与政策，不能覆盖任何订单事实。
+    优先级：能力咨询 → 具体业务事实 → 通用知识 → 一般业务 → 风险 → 未知。
+
+    特殊处理：当文本同时包含不良反应术语（过敏/刺痛等）和产品知识信号
+    （成分/致敏/配方等）时，归为 knowledge_query——客服在问"这款精华的
+    致敏成分是什么"，而不是在描述"客户用后过敏了"。
     """
     normalized = "".join(str(text or "").lower().split())
     if not normalized:
         return "unknown"
     if any(term in normalized for term in CAPABILITY_TERMS):
         return "capability_question"
-    if any(term in normalized for term in ADVERSE_EVENT_TERMS):
+    # 成分/致敏相关的"过敏"属于产品知识查询，不是业务事件
+    has_adverse = any(term in normalized for term in ADVERSE_EVENT_TERMS)
+    has_product_knowledge = any(term in normalized for term in _PRODUCT_KNOWLEDGE_SIGNALS)
+    if has_adverse and has_product_knowledge:
+        return "knowledge_query"
+    if has_adverse:
         return "business_query"
     if ORDER_NUMBER_PATTERN.search(normalized) or any(term in normalized for term in STATUS_QUERY_TERMS):
         return "business_query"

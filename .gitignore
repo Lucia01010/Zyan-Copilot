@@ -48,6 +48,7 @@ temp/
 artifacts/
 data/generated/live_debug/
 data/generated/evaluation/
+data/generated/attachments/
 
 # Local data collection outputs and scratch files
 output/
@@ -61,3 +62,6 @@ data/raw/
 # External reference materials and local documents
 /docs/*.pdf
 /*.docx
+
+# Trae / Codex local working memory
+.workbuddy/

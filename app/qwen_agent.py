@@ -102,6 +102,8 @@ class QwenProvider:
         self.api_key = api_key or os.getenv("QWEN_API_KEY")
         self.base_url = (base_url or os.getenv("QWEN_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")).rstrip("/")
         self.model = model or os.getenv("QWEN_MODEL", "qwen3.7-plus")
+        # 图片识别（多模态）：带图请求切换到视觉模型；DashScope 兼容模式支持 image_url 内容块
+        self.vision_model = os.getenv("QWEN_VISION_MODEL", "qwen-vl-max")
         self.timeout = float(os.getenv("QWEN_TIMEOUT", "30"))
         self.temperature = float(os.getenv("QWEN_TEMPERATURE", "0.2"))
         self.free_only = os.getenv("QWEN_FREE_ONLY", "true").lower() in {"1", "true", "yes", "on"}
@@ -149,8 +151,24 @@ class QwenProvider:
             pass
         return value
 
-    def _request(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]], *, response_format: dict[str, Any] | None = None, stage: str = "tool") -> dict[str, Any]:
-        payload = {"model": self.model, "messages": messages, "tools": tools, "tool_choice": "auto" if tools else "none", "temperature": self.temperature, "max_tokens": self.max_tokens, "enable_thinking": self.enable_thinking if stage == "tool" else False, "stream": False}
+    def _request(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]], *, response_format: dict[str, Any] | None = None, stage: str = "tool", model: str | None = None) -> dict[str, Any]:
+        # DashScope 兼容模式的部分模型（qwen-max 等）不接受 tools=[] 空数组，
+        # tools 为空时必须完全省略 tools 和 tool_choice 键。
+        payload: dict[str, Any] = {"model": model or self.model, "messages": messages, "temperature": self.temperature, "max_tokens": self.max_tokens, "stream": False}
+        if tools:
+            payload["tools"] = tools
+            payload["tool_choice"] = "auto"
+        # enable_thinking 是 DashScope 文本模型的思考模式参数。
+        # 仅当 enable_thinking=True 时才传；False 时完全省略（避免某些模型
+        # 因不识别该参数键而返回 400 Bad Request）。
+        # 视觉模型不透传该字段（已知不支持）。
+        use_enable = False
+        if stage == "tool":
+            use_enable = self.enable_thinking
+        elif model is None or model == self.model:
+            use_enable = False  # chat / synthesis / repair 阶段一律不开
+        if use_enable and not (model and model != self.model):
+            payload["enable_thinking"] = True
         if response_format is not None:
             payload["response_format"] = response_format
         request = urllib.request.Request(self.base_url + "/chat/completions", data=json.dumps(payload, ensure_ascii=False).encode(), headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}, method="POST")

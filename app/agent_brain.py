@@ -113,6 +113,7 @@ def process_message(
     memory: SessionMemory | None = None,
     state_machine: ConversationStateMachine | None = None,
     llm_provider: Any = None,
+    images: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Agent Brain 主入口：Input → 完整管线 → 带全阶段信息的响应。
 
@@ -134,7 +135,7 @@ def process_message(
 
     # M22 自由对话兜底：能力咨询/闲聊在 live 模式下由 LLM 人性化回应
     def _free_reply(fallback: str) -> str:
-        candidate = generate_conversational_reply(llm_provider, user_text=text, intent=intent, history=past_turns)
+        candidate = generate_conversational_reply(llm_provider, user_text=text, intent=intent, history=past_turns, images=images)
         if candidate and grounding_check(candidate, [])["grounded"]:
             return candidate
         return fallback
@@ -183,7 +184,7 @@ def process_message(
     # 6. Response Generation：live 模式优先 LLM 基于证据人性化组织语言
     reply = route["message"]
     grounding = grounding_check(reply, route["results"])
-    llm_reply = generate_conversational_reply(llm_provider, user_text=text, intent=intent, context_used=context_used, history=past_turns, results=route["results"])
+    llm_reply = generate_conversational_reply(llm_provider, user_text=text, intent=intent, context_used=context_used, history=past_turns, results=route["results"], images=images)
     if llm_reply:
         llm_grounding = grounding_check(llm_reply, route["results"])
         if llm_grounding["grounded"]:

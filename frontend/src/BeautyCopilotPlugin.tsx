@@ -1,12 +1,12 @@
 import React, { useEffect, useRef, useState } from 'react'
-import { PluginActions, PluginContext, emotionLabel, intentLabel, riskLevelLabel } from './pluginRuntime'
+import { Attachment, PluginActions, PluginContext, attachmentUrl, emotionLabel, intentLabel, riskLevelLabel, uploadAttachment } from './pluginRuntime'
 import { MascotIcon } from './components/brand/Brand'
 
 export type PluginRisk = { level: string; findings: Array<{ risk_id?: string | null; reason: string; recommended_action: string; evidence?: Record<string, unknown> }>; requires_human_review: boolean }
 export type PluginResult = { suggestion: string; risk: PluginRisk; provider: string; latency_ms: number; risk_id?: string | null; risk_ids?: string[]; model_output?: { intent?: string; intent_major?: string; intent_minor?: string; emotion?: string; summary?: string }; workflow?: { customer_need?: string } }
 export type QuickAction = { action_id: string; label: string; reason: string; priority: 'primary'|'secondary'; tool_name: string; available: boolean; source?: string }
 type ChatKind = 'chat' | 'summary' | 'actions' | 'suggestion' | 'action-result' | 'error'
-type ChatLine = { id: string; role: '客服'|'知妍'; text: string; source?: string; kind: ChatKind; actionId?: string; prompt?: string }
+type ChatLine = { id: string; role: '客服'|'知妍'; text: string; source?: string; kind: ChatKind; actionId?: string; prompt?: string; attachment?: Attachment; attachmentIds?: string[] }
 type Props = { context: PluginContext | null; result: PluginResult | null; loading: boolean; actions: PluginActions; onStartAnalysis?: () => void }
 const api = import.meta.env.VITE_API_URL || 'http://localhost:9000'
 
@@ -20,6 +20,8 @@ const IconRetry = <svg width="13" height="13" viewBox="0 0 24 24" fill="none" st
 const IconLike = <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3zM7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3"/></svg>
 const IconDislike = <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10 15v4a3 3 0 0 0 3 3l4-9V2H5.72a2 2 0 0 0-2 1.7l-1.38 9a2 2 0 0 0 2 2.3zM17 2h3a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2h-3"/></svg>
 const IconSend = <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>
+const IconMaximize = <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/></svg>
+const IconMinimize = <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M8 3v3a2 2 0 0 1-2 2H3"/><path d="M21 8h-3a2 2 0 0 1-2-2V3"/><path d="M3 16h3a2 2 0 0 1 2 2v3"/><path d="M16 21v-3a2 2 0 0 1 2-2h3"/></svg>
 
 function evidenceSummary(evidence: Record<string, unknown> | undefined): string {
   if (!evidence || !Object.keys(evidence).length) return '已关联业务记录，详情待人工核对。'
@@ -34,14 +36,25 @@ export function BeautyCopilotPlugin({ context, result, loading, actions, onStart
   const [input, setInput] = useState('')
   const [actionLoading, setActionLoading] = useState('')
   const [chatLoading, setChatLoading] = useState(false)
+  const [uploading, setUploading] = useState(false)
   const [feedback, setFeedback] = useState<Record<string, 'like'|'dislike'|undefined>>({})
   const [copiedId, setCopiedId] = useState('')
+  const [chatFullscreen, setChatFullscreen] = useState(false)
   const requestIdRef = useRef('')
   const emittedSummaryRef = useRef('')
   const sendingRef = useRef(false)
+  // 图片识别：上传后暂存附件 id，供紧随其后的一次自由追问复用，避免每条消息都重复携带图片
+  const pendingImagesRef = useRef<string[]>([])
   const chatInputRef = useRef<HTMLInputElement>(null)
   const [listening, setListening] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  // 自动滚底：chat 容器 ref + "用户是否在底部附近" 跟踪
+  const chatMessagesRef = useRef<HTMLDivElement>(null)
+  const nearBottomRef = useRef(true)
+  const markNearBottom = () => {
+    const el = chatMessagesRef.current; if (!el) return
+    nearBottomRef.current = el.scrollTop + el.clientHeight >= el.scrollHeight - 80
+  }
   const recognitionRef = useRef<any>(null)
   const toggleVoice = () => {
     const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
@@ -55,8 +68,19 @@ export function BeautyCopilotPlugin({ context, result, loading, actions, onStart
     recognitionRef.current = rec; rec.start(); setListening(true)
   }
   useEffect(() => {
-    setChat([]); setInput(''); setQuickActions([]); setFeedback({}); sendingRef.current = false
-    if (!context) return
+    setInput(''); setQuickActions([]); setFeedback({}); sendingRef.current = false
+    if (!context) { setChat([]); return }
+    // 切会话时从后端恢复 copilot 历史（user + agent 消息对）
+    fetch(`${api}/api/copilot/chat/history?session_id=${encodeURIComponent(context.sessionId)}&limit=50`).then(r => r.ok ? r.json() : Promise.reject(r)).then(data => {
+      const restored: ChatLine[] = (data.items || []).map((item: any) => ({
+        id: uid(),
+        role: item.role === '客服' ? '客服' : '知妍',
+        kind: item.kind === 'error' ? 'error' : 'chat',
+        text: item.text || '',
+        attachment: item.attachment_id ? undefined : undefined, // 附件历史暂不恢复（附件文件可能已清理）
+      }))
+      setChat(restored)
+    }).catch(() => setChat([]))
     fetch(`${api}/api/workbench/${encodeURIComponent(context.sessionId)}/actions`).then(r => r.ok ? r.json() : Promise.reject(r)).then(data => setQuickActions(data.items || [])).catch(() => setQuickActions([]))
   }, [context?.sessionId])
   useEffect(() => {
@@ -70,6 +94,14 @@ export function BeautyCopilotPlugin({ context, result, loading, actions, onStart
     if (result?.suggestion) lines.push({ id: uid(), role: '知妍', kind: 'suggestion', text: result.suggestion })
     setChat(lines2 => [...lines2, ...lines])
   }, [result?.model_output?.summary, result?.suggestion, context?.sessionId])
+  useEffect(() => {
+    const el = chatMessagesRef.current
+    if (!el) return
+    // 只有用户在底部附近（或新会话刚切过来）才自动滚底
+    if (nearBottomRef.current) {
+      el.scrollTop = el.scrollHeight
+    }
+  }, [chat.length, chatLoading])
   const retryAnalysis = () => {
     if (!onStartAnalysis || loading) return
     emittedSummaryRef.current = ''
@@ -77,7 +109,7 @@ export function BeautyCopilotPlugin({ context, result, loading, actions, onStart
     onStartAnalysis()
   }
   const retry = (line: ChatLine) => {
-    if (line.kind === 'chat' && line.prompt) { askText(line.prompt); return }
+    if (line.kind === 'chat' && line.prompt) { askText(line.prompt, line.attachmentIds || []); return }
     if (line.kind === 'action-result' && line.actionId) { const item = quickActions.find(a => a.action_id === line.actionId); if (item) { setChat(lines => lines.filter(l => l.id !== line.id)); runActionCore(item) } return }
     retryAnalysis()
   }
@@ -88,29 +120,52 @@ export function BeautyCopilotPlugin({ context, result, loading, actions, onStart
     catch { setChat(lines => [...lines, { id: uid(), role: '知妍', kind: 'error', text: '当前业务查询暂不可用，我会帮您进一步核实。' }]) }
     finally { setActionLoading('') }
   }
-  const askText = async (text: string) => {
+  const askText = async (text: string, attachmentIds: string[] = [], silentUserBubble = false) => {
     if (!text || !context || chatLoading || sendingRef.current) return
     sendingRef.current = true
-    setInput(''); setChat(lines => [...lines, { id: uid(), role: '客服', kind: 'chat', text }]); setChatLoading(true)
+    // 未显式传图时沿用上传后暂存的一次性图片，携带后立即清空，避免后续消息重复送图
+    const images = attachmentIds.length ? attachmentIds : pendingImagesRef.current
+    pendingImagesRef.current = []
+    setInput('')
+    if (!silentUserBubble) setChat(lines => [...lines, { id: uid(), role: '客服', kind: 'chat', text }])
+    setChatLoading(true)
     requestIdRef.current = uid()
-    try { const response = await actions.askAgent(text, context.sessionId, requestIdRef.current); setChat(lines => [...lines, { id: uid(), role: '知妍', kind: 'chat', prompt: text, text: response.message, source: response.source }]) }
+    try { const response = await actions.askAgent(text, context.sessionId, requestIdRef.current, images); setChat(lines => [...lines, { id: uid(), role: '知妍', kind: 'chat', prompt: text, attachmentIds: images, text: response.message, source: response.source }]) }
     catch { setChat(lines => [...lines, { id: uid(), role: '知妍', kind: 'error', text: '当前业务查询暂不可用，我会帮您进一步核实。' }]) }
     finally { sendingRef.current = false; setChatLoading(false) }
   }
   const ask = () => askText(input.trim())
+  const handleAttachment = async (file?: File) => {
+    if (!file || !context || uploading) return
+    setUploading(true)
+    try {
+      const attachment = await uploadAttachment(file)
+      setChat(lines => [...lines, { id: uid(), role: '客服', kind: 'chat', text: `已上传附件：${attachment.name}`, attachment }])
+      if (attachment.kind === 'image') {
+        // 图片识别：上传成功后自动请知妍识别图片内容（视觉模型）；同一张图保留给紧随其后的一次追问
+        pendingImagesRef.current = [attachment.id]
+        await askText('请看看我上传的这张图片，描述里面的内容并说明是否需要跟进。', [attachment.id], true)
+      }
+    } catch (error) {
+      setChat(lines => [...lines, { id: uid(), role: '知妍', kind: 'error', text: `附件上传失败：${(error as Error).message}` }])
+    } finally {
+      setUploading(false)
+      if (fileInputRef.current) fileInputRef.current.value = ''
+    }
+  }
   const output = result?.model_output || {}
-  return <section className="panel plugin">
-    <div className="panel-title plugin-identity"><div className="plugin-brand-lockup"><MascotIcon size={40}/><div><span className="eyebrow">ZHIYAN COPILOT</span><h2>知妍·伴答</h2><p className="subhead">智能接待辅助插件</p></div></div></div>
+  return <section className={"panel plugin"+(chatFullscreen ? " plugin-fullscreen" : "")}>
+    <div className="panel-title plugin-identity"><div className="plugin-brand-lockup"><MascotIcon size={40}/><div><span className="eyebrow">ZHIYAN COPILOT</span><h2>知妍·伴答</h2></div></div></div>
     {!context ? <div className="plugin-empty"><strong>知妍已准备好</strong><span>请选择一个客户会话，我将帮助你分析需求。</span><ul><li>理解客户需求</li><li>查询订单与服务记录</li><li>判断风险并生成回复建议</li></ul><button onClick={onStartAnalysis} disabled={!onStartAnalysis}>开始分析</button></div> : <>
-      <h3>客户洞察</h3><div className="insight-grid"><div><label>当前诉求</label><strong>{output.intent ? intentLabel(output.intent) : '待确认'}</strong></div><div><label>情绪</label><strong>{output.emotion ? emotionLabel(output.emotion) : (result?.risk.requires_human_review ? '需关注' : '待分析')}</strong></div><div><label>风险</label><strong>{result?.risk?.level ? riskLevelLabel(result.risk.level) : '待分析'}</strong></div></div>
-      <h3>订单商品</h3><div className="plugin-order-product">{context.currentOrder || context.currentProduct ? <><strong>{String(context.currentProduct?.product_name || context.currentProduct?.product || context.currentOrder?.product_name || '关联商品')}</strong><span>{String(context.currentOrder?.order_number || context.currentOrder?.order_id || '订单信息已关联')} · {String(context.currentOrder?.status || context.currentOrder?.order_status || '状态待核对')}</span></> : <span className="detail-copy">暂无关联订单商品，插件将按需核查。</span>}</div>
+      <h3 className="insight-title">客户洞察</h3><div className="insight-grid"><div><label>当前诉求</label><strong>{output.intent ? intentLabel(output.intent) : '待确认'}</strong></div><div><label>情绪</label><strong>{output.emotion ? emotionLabel(output.emotion) : (result?.risk.requires_human_review ? '需关注' : '待分析')}</strong></div><div><label>风险</label><strong>{result?.risk?.level ? riskLevelLabel(result.risk.level) : '待分析'}</strong></div></div>
+      <h3 className="order-title">订单商品</h3><div className="plugin-order-product">{context.currentOrder || context.currentProduct ? <><strong>{String(context.currentProduct?.product_name || context.currentProduct?.product || context.currentOrder?.product_name || '关联商品')}</strong><span>{String(context.currentOrder?.order_number || context.currentOrder?.order_id || '订单信息已关联')} · {String(context.currentOrder?.status || context.currentOrder?.order_status || '状态待核对')}</span></> : <span className="detail-copy">暂无关联订单商品，插件将按需核查。</span>}</div>
       {result?.risk?.findings?.length ? <div className="risk-compact">{result.risk.findings.slice(0, 2).map((finding, i) => <div className="finding risk-card" key={finding.risk_id || i}><div><strong>{finding.reason}</strong><span>{evidenceSummary(finding.evidence)}</span></div></div>)}{(() => { const target = result.risk_id || result.risk.findings.find(f => f.risk_id)?.risk_id; return target ? <button className="secondary risk-card-action" onClick={() => actions.openRiskDetail(target)}>查看风险详情</button> : null })()}</div> : null}
-      <h3>知妍 Agent</h3><div className="agent-chat" aria-label="知妍 Agent 对话框"><div className="agent-chat-messages">{chat.length ? chat.map(line => {
+      <div className="agent-heading"><h3>知妍 Agent</h3><button type="button" className="fs-toggle" title={chatFullscreen ? '退出全屏' : '进入全屏'} aria-label={chatFullscreen ? '退出全屏' : '进入全屏'} onClick={() => setChatFullscreen(v => !v)}>{chatFullscreen ? IconMinimize : IconMaximize}</button></div><div className="agent-chat" aria-label="知妍 Agent 对话框"><div className="agent-chat-messages" ref={chatMessagesRef} onScroll={markNearBottom}>{chat.length ? chat.map(line => {
         const fb = feedback[line.id]
         const isOperator = line.role === '客服'
         return <div className={`agent-chat-line ${isOperator ? 'operator' : 'copilot'}`} key={line.id}>
           {isOperator ? null : <span className="bubble-role">{line.role}{line.kind === 'suggestion' ? ' · AI生成' : ''}</span>}
-          <div className="agent-chat-bubble"><span>{line.text}</span></div>
+          <div className="agent-chat-bubble">{line.attachment && (line.attachment.kind === 'image' ? <img className="chat-attachment-img" src={attachmentUrl(line.attachment)} alt={line.attachment.name}/> : <a className="chat-attachment-file" href={attachmentUrl(line.attachment)} target="_blank" rel="noreferrer">{line.attachment.name}</a>)}<span>{line.text}</span></div>
           {!isOperator && line.kind === 'actions' && <div className="chat-inline-actions">{quickActions.map(item => <button key={item.action_id} className={item.priority === 'primary' ? 'quick-action primary' : 'quick-action'} disabled={!!actionLoading || !item.available} onClick={() => runActionCore(item)}>{actionLoading === item.action_id ? '查询中…' : item.label}</button>)}{!quickActions.length && <span className="detail-copy">暂无可执行的业务行动。</span>}</div>}
           {!isOperator && line.kind === 'suggestion' && <button className="chat-insert-btn" onClick={() => actions.insertSuggestedReply(line.text)}>{IconSend}复制到回复框</button>}
           <div className="msg-actions">
@@ -122,7 +177,7 @@ export function BeautyCopilotPlugin({ context, result, loading, actions, onStart
             </>}
           </div>
         </div>
-      }) : <div className="detail-copy">可以向知妍询问物流、退款、历史沟通或售后工单。</div>}{loading && <div className="chat-loading">知妍正在分析当前会话<span className="send-dots">…</span></div>}</div><div className="agent-chat-input trae-input"><button type="button" className="trae-icon-btn" title="上传附件" aria-label="上传附件" onClick={() => fileInputRef.current?.click()}><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></button><input ref={fileInputRef} type="file" style={{display:'none'}} aria-hidden="true" tabIndex={-1}/><input ref={chatInputRef} value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') ask() }} placeholder="向知妍发送消息"/><button type="button" className={`trae-icon-btn ${listening ? 'listening' : ''}`} onClick={toggleVoice} title="语音输入" aria-label="语音输入"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg></button><button type="button" className="trae-send-btn" onClick={ask} disabled={!input.trim() || chatLoading} title="发送" aria-label="发送">{chatLoading ? <span className="send-dots">…</span> : <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>}</button></div></div>
+      }) : <div className="detail-copy">可以向知妍询问物流、退款、历史沟通或售后工单。</div>}{loading && <div className="chat-loading">知妍正在分析当前会话<span className="send-dots">…</span></div>}{uploading && <div className="chat-loading">附件上传中<span className="send-dots">…</span></div>}</div><div className="agent-chat-input trae-input"><button type="button" className="trae-icon-btn" title="上传附件" aria-label="上传附件" disabled={uploading} onClick={() => fileInputRef.current?.click()}><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></button><input ref={fileInputRef} type="file" style={{display:'none'}} aria-hidden="true" tabIndex={-1} onChange={event => handleAttachment(event.target.files?.[0])}/><input ref={chatInputRef} value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') ask() }} placeholder="向知妍发送消息"/><button type="button" className={`trae-icon-btn ${listening ? 'listening' : ''}`} onClick={toggleVoice} title="语音输入" aria-label="语音输入"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg></button><button type="button" className="trae-send-btn" onClick={ask} disabled={!input.trim() || chatLoading} title="发送" aria-label="发送">{chatLoading ? <span className="send-dots">…</span> : <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>}</button></div></div>
     </>}
   </section>
 }

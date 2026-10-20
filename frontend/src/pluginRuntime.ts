@@ -6,7 +6,7 @@ export type PluginActions = {
   requestHumanTakeover(): void
   openRiskDetail(riskId?: string): void
   executeQuickAction(actionId: string, sessionId: string): Promise<{ message: string; source?: string }>
-  askAgent(message: string, sessionId: string, requestId?: string): Promise<{ message: string; source?: string }>
+  askAgent(message: string, sessionId: string, requestId?: string, attachmentIds?: string[]): Promise<{ message: string; source?: string }>
 }
 export type QianniuHostAdapter = { getPluginContext(): PluginContext | null; emit(event: HostEventName): void; onEvent(listener: (event: HostEventName) => void): () => void }
 export class SimulatedQianniuAdapter implements QianniuHostAdapter {
@@ -90,3 +90,15 @@ export const INTENT_LABELS: Record<string, string> = {
   other: '其他咨询',
 }
 export const intentLabel = (value: string) => INTENT_LABELS[value.trim().toLowerCase()] || value
+
+// 知妍对话框附件：真实上传到后端并回传可访问元数据
+export type Attachment = { id: string; name: string; size: number; content_type: string; kind: 'image' | 'file'; url: string }
+const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:9000'
+export const attachmentUrl = (attachment: Attachment) => attachment.url.startsWith('http') ? attachment.url : `${API_BASE}${attachment.url}`
+export async function uploadAttachment(file: File): Promise<Attachment> {
+  const form = new FormData()
+  form.append('file', file)
+  const response = await fetch(`${API_BASE}/api/workbench/attachments`, { method: 'POST', body: form })
+  if (!response.ok) throw new Error(`HTTP ${response.status}`)
+  return response.json() as Promise<Attachment>
+}
